@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import time
 from collections import defaultdict, deque
@@ -10,11 +11,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 import db
-from pipeline import process_email
+from pipeline import process_email, process_email_stream
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -96,6 +97,18 @@ async def healthz() -> dict:
 @app.post("/api/simulate-email", dependencies=[Depends(require_passcode)])
 async def simulate_email(email: SimulatedEmail) -> dict:
     return await process_email(email.sender_email, email.thread_id, email.message_id, email.body)
+
+
+@app.post("/api/simulate-email/stream", dependencies=[Depends(require_passcode)])
+async def simulate_email_stream(email: SimulatedEmail) -> StreamingResponse:
+    """Same pipeline as /api/simulate-email, streamed as Server-Sent Events while it runs."""
+
+    async def sse():
+        async for event in process_email_stream(email.sender_email, email.thread_id, email.message_id, email.body):
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/reset-db", dependencies=[Depends(require_passcode)])

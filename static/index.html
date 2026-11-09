@@ -12,6 +12,10 @@
   .tok { border-radius:4px; padding:0 3px; font-weight:600; }
   pre { white-space:pre-wrap; word-break:break-word; }
   .scroll { overflow-y:auto; }
+  .caret::after { content:"▌"; color:#10b981; animation:blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  .spin { animation:spin 1.2s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body class="bg-slate-100 text-slate-800 text-sm h-screen flex flex-col">
@@ -62,7 +66,9 @@
   <!-- Column 2: X-Ray -->
   <section class="bg-white rounded-lg shadow flex flex-col min-h-0">
     <h2 class="px-4 py-2 border-b font-semibold flex items-center">② Backend &amp; AI X-Ray
-      <span id="finalBadge" class="ml-auto"></span></h2>
+      <span class="ml-auto flex items-center gap-2">
+        <button id="skipBtn" class="hidden text-xs border rounded px-2 py-0.5 font-normal hover:bg-slate-50">⏩ Skip</button>
+        <span id="finalBadge"></span></span></h2>
     <div id="xray" class="p-4 scroll flex-1 space-y-3">
       <p class="text-slate-400">Pick a scenario above and click <b>Send to FastAPI</b> to see each phase of the pipeline.</p>
     </div>
@@ -174,15 +180,23 @@ $("newThreadBtn").onclick = () => { $("threadId").value = rid("thread"); $("mess
 $("newMsgBtn").onclick = () => { $("messageId").value = rid("msg"); };
 
 // ------------------------------------------------------------------- send
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let skipAnim = false;
+let chain = Promise.resolve();          // renders events strictly in arrival order
+const enqueue = (ev) => { chain = chain.then(() => renderEvent(ev)).catch((e) => console.error(e)); };
+
+$("skipBtn").onclick = () => { skipAnim = true; };
+
 $("sendBtn").onclick = async () => {
   toast("");
   const btn = $("sendBtn");
-  btn.disabled = true; btn.textContent = "Processing…";
-  $("xray").innerHTML = `<p class="text-slate-400 animate-pulse">Running pipeline…</p>`;
-  $("finalBadge").innerHTML = "";
+  btn.disabled = true; btn.textContent = "Streaming…";
+  resetXray();
+  $("skipBtn").classList.remove("hidden");
   try {
-    const out = await api("/api/simulate-email", {
+    const res = await fetch("/api/simulate-email/stream", {
       method: "POST",
+      headers: { "Content-Type": "application/json", "X-Demo-Passcode": $("passcode").value },
       body: JSON.stringify({
         sender_email: $("sender").value.trim(),
         thread_id: $("threadId").value.trim(),
@@ -190,13 +204,33 @@ $("sendBtn").onclick = async () => {
         body: $("body").value,
       }),
     });
-    renderTrace(out);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(`${res.status}: ${typeof d.detail === "string" ? d.detail : JSON.stringify(d.detail || d)}`);
+    }
+    // Server-Sent Events over a POST body: parse "data: {...}\n\n" frames as they arrive.
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, i); buf = buf.slice(i + 2);
+        for (const line of frame.split("\n")) if (line.startsWith("data: ")) enqueue(JSON.parse(line.slice(6)));
+      }
+    }
+    await chain;
     $("messageId").value = rid("msg"); // the next send is a new message by default
   } catch (e) {
-    $("xray").innerHTML = `<p class="text-rose-700">${esc(e.message)}</p>`;
+    await chain;
+    xrayAppend(`<p class="text-rose-700">${esc(e.message)}</p>`);
     toast(e.message);
   } finally {
     btn.disabled = false; btn.textContent = "Send to FastAPI";
+    $("skipBtn").classList.add("hidden");
     refreshState();
   }
 };
@@ -220,13 +254,14 @@ const PHASE = {
   phase4: ["Phase 4 · Local De-masking & Dispatch", "border-amber-400"],
 };
 
+// Animation markers used by animate(): .tw = typewriter, [data-w] = gauge slide, .fade = fade in.
 function gauge(label, value, max, threshold, color) {
   const pct = Math.max(0, Math.min(100, (value / max) * 100));
   const tpct = (threshold / max) * 100;
   return `<div class="mb-2">
     <div class="flex justify-between text-xs"><span>${esc(label)}</span><span class="font-mono">${value.toFixed(2)} / ${max}</span></div>
     <div class="relative h-2.5 bg-slate-200 rounded">
-      <div class="h-2.5 rounded ${color}" style="width:${pct}%"></div>
+      <div class="h-2.5 rounded ${color} transition-all duration-700" data-w="${pct}%" style="width:${pct}%"></div>
       <div class="absolute top-[-3px] h-4 w-0.5 bg-slate-900" style="left:${tpct}%" title="threshold ${threshold}"></div>
     </div></div>`;
 }
@@ -237,7 +272,7 @@ function renderJev(j) {
   let probs = "";
   for (const [k, v] of Object.entries(j.intent_probabilities || {}).sort((a, b) => b[1] - a[1])) {
     probs += `<div class="flex items-center gap-2 text-xs"><span class="w-24">${esc(k)}</span>
-      <div class="flex-1 h-1.5 bg-slate-200 rounded"><div class="h-1.5 bg-violet-500 rounded" style="width:${v * 100}%"></div></div>
+      <div class="flex-1 h-1.5 bg-slate-200 rounded"><div class="h-1.5 bg-violet-500 rounded transition-all duration-500" data-w="${v * 100}%" style="width:${v * 100}%"></div></div>
       <span class="font-mono w-10 text-right">${(+v).toFixed(2)}</span></div>`;
   }
   return `<div class="text-xs mb-2">Source: ${src}</div>
@@ -247,46 +282,219 @@ function renderJev(j) {
     ${probs ? `<div class="mt-2 space-y-1">${probs}</div>` : ""}`;
 }
 
+const fadeJson = (o) => `<div class="fade transition-opacity duration-300">${json(o)}</div>`;
+
 function renderAgentSteps(steps) {
   if (!steps.length) return `<p class="text-xs text-slate-400">No tool calls.</p>`;
   return steps.map((s) => {
     if (s.step === "agent_input")
-      return `<div class="text-xs"><div class="font-semibold">→ Sent to OpenAI (masked)</div><pre class="bg-slate-50 border rounded p-2">${highlightTokens(s.text)}</pre></div>`;
+      return `<div class="text-xs"><div class="font-semibold">→ Sent to OpenAI (masked)</div><pre class="tw bg-slate-50 border rounded p-2">${highlightTokens(s.text)}</pre></div>`;
     if (s.step === "tool_call")
-      return `<div class="text-xs"><div class="font-semibold text-emerald-700">🛠 LLM called <code>${esc(s.tool)}</code></div>${json(s.args)}</div>`;
+      return `<div class="text-xs"><div class="font-semibold text-emerald-700">🛠 LLM called <code>${esc(s.tool)}</code></div>${fadeJson(s.args)}</div>`;
     if (s.step === "tool_result")
-      return `<div class="text-xs"><div class="font-semibold">↩ Masked result returned to LLM</div><pre class="bg-slate-50 border rounded p-2">${highlightTokens(s.result)}</pre></div>`;
+      return `<div class="text-xs"><div class="font-semibold">↩ Masked result returned to LLM</div><pre class="tw bg-slate-50 border rounded p-2">${highlightTokens(s.result)}</pre></div>`;
     if (s.step === "agent_final")
-      return `<div class="text-xs"><div class="font-semibold">🤖 Agent final output</div><pre class="bg-slate-50 border rounded p-2">${highlightTokens(s.text)}</pre></div>`;
-    const { step, local_only, ...rest } = s;
-    return `<div class="text-xs"><div class="font-semibold text-amber-700">🔒 ${esc(step)} ${local_only ? "<span class='font-normal'>(local Python only — never sent to AI)</span>" : ""}</div>${json(rest)}</div>`;
+      return `<div class="text-xs"><div class="font-semibold">🤖 Agent final output</div><pre class="tw bg-slate-50 border rounded p-2">${highlightTokens(s.text)}</pre></div>`;
+    const { step, local_only, type, ...rest } = s;
+    return `<div class="text-xs"><div class="font-semibold text-amber-700">🔒 ${esc(step)} ${local_only ? "<span class='font-normal'>(local Python only — never sent to AI)</span>" : ""}</div>${fadeJson(rest)}</div>`;
   }).join("");
 }
 
-function renderStep(s) {
-  const [title, border] = PHASE[s.phase] || [s.phase, "border-slate-300"];
+function stepBody(s) {
   let inner = "";
   if (s.raw_text !== undefined) {
     inner += `<div class="grid grid-cols-2 gap-2 text-xs">
-      <div><div class="font-semibold mb-1">Raw (local)</div><pre class="bg-rose-50 border border-rose-200 rounded p-2">${esc(s.raw_text)}</pre></div>
-      <div><div class="font-semibold mb-1">Masked (what AI sees)</div><pre class="bg-emerald-50 border border-emerald-200 rounded p-2">${highlightTokens(s.masked_text)}</pre></div>
-    </div><div class="text-xs font-semibold mt-2">Local Vault JSON</div>${json(s.vault)}`;
+      <div><div class="font-semibold mb-1">Raw (local)</div><pre class="tw bg-rose-50 border border-rose-200 rounded p-2">${esc(s.raw_text)}</pre></div>
+      <div><div class="font-semibold mb-1">Masked (what AI sees)</div><pre class="tw bg-emerald-50 border border-emerald-200 rounded p-2">${highlightTokens(s.masked_text)}</pre></div>
+    </div><div class="text-xs font-semibold mt-2">Local Vault JSON</div>${fadeJson(s.vault)}`;
   }
-  if (s.prior_vault && Object.keys(s.prior_vault).length) inner += `<div class="text-xs font-semibold">Reloaded vault</div>${json(s.prior_vault)}`;
+  if (s.prior_vault && Object.keys(s.prior_vault).length) inner += `<div class="text-xs font-semibold">Reloaded vault</div>${fadeJson(s.prior_vault)}`;
   if (s.jev) inner += renderJev(s.jev);
-  if (s.decision) inner += `<ul class="text-xs list-disc ml-4">${s.decision.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>`;
-  if (s.reasons) inner += `<ul class="text-xs list-disc ml-4">${s.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>`;
-  if (s.agent_steps) inner += `<div class="space-y-2">${renderAgentSteps(s.agent_steps)}</div>`;
-  if (s.error) inner += `<pre class="text-xs text-rose-700">${esc(s.error)}</pre>`;
-  if (s.thread_status) inner += `<div class="text-xs">thread_status: ${badge(s.thread_status)}</div>`;
-  return `<div class="border-l-4 ${border} pl-3">
-    <div class="text-[10px] uppercase tracking-wide text-slate-400">${esc(title)} · +${s.ms}ms</div>
-    <div class="font-semibold mb-1">${esc(s.title)}</div>${inner}</div>`;
+  if (s.decision) inner += `<ul class="text-xs list-disc ml-4">${s.decision.reasons.map((r) => `<li class="tw">${esc(r)}</li>`).join("")}</ul>`;
+  if (s.reasons) inner += `<ul class="text-xs list-disc ml-4">${s.reasons.map((r) => `<li class="tw">${esc(r)}</li>`).join("")}</ul>`;
+  if (s.agent_steps) {
+    inner += agentCard   // already shown live above, so keep the replay collapsed
+      ? `<details class="text-xs"><summary class="cursor-pointer text-slate-500">Replay ${s.agent_steps.length} agent steps</summary><div class="space-y-2 mt-2">${renderAgentSteps(s.agent_steps)}</div></details>`
+      : `<div class="space-y-2">${renderAgentSteps(s.agent_steps)}</div>`;
+  }
+  if (s.error) inner += `<pre class="tw text-xs text-rose-700">${esc(s.error)}</pre>`;
+  if (s.thread_status) inner += `<div class="text-xs fade transition-opacity duration-300">thread_status: ${badge(s.thread_status)}</div>`;
+  return inner;
 }
 
-function renderTrace(out) {
-  $("finalBadge").innerHTML = badge(out.status);
-  $("xray").innerHTML = out.trace.map(renderStep).join("");
+function card(phase, ms, titleHtml, bodyHtml = "") {
+  const [label, border] = PHASE[phase] || [phase, "border-slate-300"];
+  const el = document.createElement("div");
+  el.className = `border-l-4 ${border} pl-3`;
+  el.innerHTML = `<div class="text-[10px] uppercase tracking-wide text-slate-400">${esc(label)} · +${ms}ms</div>
+    <div class="font-semibold mb-1 card-title">${titleHtml}</div><div class="card-body space-y-2">${bodyHtml}</div>`;
+  return el;
+}
+
+// ---- animation primitives
+async function typewrite(el) {
+  const finalHtml = el.dataset.final, text = el.dataset.text || "";
+  if (skipAnim || !text) { el.innerHTML = finalHtml; return; }
+  const duration = Math.min(600, text.length * 12);
+  const t0 = performance.now();
+  el.classList.add("caret");
+  await new Promise((resolve) => {
+    const tick = (now) => {
+      const n = skipAnim ? text.length : Math.floor(((now - t0) / duration) * text.length);
+      el.textContent = text.slice(0, n);
+      keepScrolled();
+      if (n >= text.length) resolve(); else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  el.classList.remove("caret");
+  el.innerHTML = finalHtml;   // swap in the token-highlighted version
+}
+
+async function animate(root) {
+  const items = [...root.querySelectorAll(".tw, [data-w], .fade")];
+  for (const el of items) {
+    if (el.classList.contains("tw")) { el.dataset.final = el.innerHTML; el.dataset.text = el.textContent; el.textContent = ""; }
+    else if (el.dataset.w !== undefined) el.style.width = "0%";
+    else el.style.opacity = 0;
+  }
+  void root.offsetWidth; // commit the zero widths so the transitions run
+  for (const el of items) {
+    if (el.classList.contains("tw")) await typewrite(el);
+    else if (el.dataset.w !== undefined) { el.style.width = el.dataset.w; if (!skipAnim) await sleep(150); }
+    else { el.style.opacity = 1; if (!skipAnim) await sleep(60); }
+    keepScrolled();
+  }
+}
+
+let stickToBottom = true;
+$("xray").addEventListener("scroll", () => {
+  const x = $("xray");
+  stickToBottom = x.scrollHeight - x.scrollTop - x.clientHeight < 60;
+});
+function keepScrolled() { if (stickToBottom) $("xray").scrollTop = $("xray").scrollHeight; }
+function xrayAppend(html) { $("xray").insertAdjacentHTML("beforeend", html); keepScrolled(); }
+
+// ---- per-run state
+let pending = {};      // phase -> spinner card waiting for its result
+let agentCard = null;  // live card for the Return Agent
+let drafts = {};       // item_id -> {tool, pre, done}
+let textBlocks = {};   // item_id -> pre for streamed plain text
+
+function resetXray() {
+  skipAnim = false; stickToBottom = true;
+  pending = {}; agentCard = null; drafts = {}; textBlocks = {};
+  $("xray").innerHTML = "";
+  $("finalBadge").innerHTML = "";
+}
+
+const spinner = `<span class="spin inline-block">⏳</span>`;
+
+function agentBody() {
+  if (!agentCard) { agentCard = card("phase3", "", "Return Agent"); $("xray").appendChild(agentCard); }
+  return agentCard.querySelector(".card-body");
+}
+
+async function appendAnimated(container, html) {
+  const wrap = document.createElement("div");
+  wrap.innerHTML = html;
+  container.appendChild(wrap);
+  keepScrolled();
+  await animate(wrap);
+}
+
+const liveBlock = (title, cls = "") => {
+  const div = document.createElement("div");
+  div.className = "text-xs";
+  div.innerHTML = `<div class="font-semibold ${cls}">${title}</div><pre class="bg-slate-50 border rounded p-2 caret live"></pre>`;
+  return div;
+};
+
+async function renderEvent(ev) {
+  if (ev.type === "phase_start") {
+    const el = card(ev.phase, ev.ms, `${spinner} ${esc(ev.title)}`);
+    $("xray").appendChild(el);
+    pending[ev.phase] = el;
+    if (ev.phase === "phase3") agentCard = el;
+    keepScrolled();
+    return;
+  }
+
+  if (ev.type === "agent_delta") {
+    const body = agentBody();
+    if (ev.kind === "tool_start") {
+      const div = liveBlock(`✍ LLM is writing a call to <code>${esc(ev.tool)}</code>…`, "text-emerald-700");
+      body.appendChild(div);
+      drafts[ev.item_id] = { tool: ev.tool, div, pre: div.querySelector("pre"), done: false };
+    } else if (ev.kind === "tool_args" && drafts[ev.item_id]) {
+      drafts[ev.item_id].pre.textContent += ev.delta;
+    } else if (ev.kind === "text") {
+      if (!textBlocks[ev.item_id]) {
+        const div = liveBlock("🤖 Agent is writing…");
+        body.appendChild(div);
+        textBlocks[ev.item_id] = div.querySelector("pre");
+      }
+      textBlocks[ev.item_id].textContent += ev.delta;
+    }
+    keepScrolled();
+    return;
+  }
+
+  if (ev.type === "agent_log") {
+    const body = agentBody();
+    if (ev.step === "tool_call") {
+      // The streamed draft is complete: replace the raw JSON with a formatted, highlighted view.
+      const d = Object.values(drafts).find((x) => !x.done && x.tool === ev.tool);
+      if (d) {
+        d.done = true;
+        d.div.innerHTML = `<div class="font-semibold text-emerald-700">🛠 LLM called <code>${esc(ev.tool)}</code></div>${json(ev.args)}`;
+        keepScrolled();
+        return;
+      }
+    }
+    if (ev.step === "agent_final") {
+      const pre = Object.values(textBlocks)[0];
+      if (pre) {
+        pre.classList.remove("caret");
+        pre.innerHTML = highlightTokens(ev.text);
+        pre.previousElementSibling.textContent = "🤖 Agent final output";
+        return;
+      }
+    }
+    await appendAnimated(body, renderAgentSteps([ev]));
+    if (["dispatch", "anti_spoofing", "label_appended"].includes(ev.step)) refreshState();
+    return;
+  }
+
+  if (ev.type === "step") {
+    const waiting = pending[ev.phase];
+    if (ev.phase === "phase3" && waiting) {
+      // The agent card stays; just mark it finished.
+      waiting.querySelector(".card-title").innerHTML = `${ev.error ? "⚠️" : "✅"} ${esc(ev.title)}`;
+      delete pending[ev.phase];
+      if (ev.error) await appendAnimated(waiting.querySelector(".card-body"), stepBody(ev));
+      return;
+    }
+    const el = card(ev.phase, ev.ms, esc(ev.title), stepBody(ev));
+    if (waiting) { waiting.replaceWith(el); delete pending[ev.phase]; }
+    else $("xray").appendChild(el);
+    keepScrolled();
+    await animate(el);
+    if (ev.title === "Escalated to human") refreshState();
+    return;
+  }
+
+  if (ev.type === "done") {
+    Object.values(pending).forEach((el) => el.querySelector(".card-title .spin")?.remove());
+    $("finalBadge").innerHTML = badge(ev.result.status);
+    refreshState();
+    return;
+  }
+
+  if (ev.type === "error") {
+    xrayAppend(`<p class="text-rose-700">Pipeline error: ${esc(ev.error)}</p>`);
+    $("finalBadge").innerHTML = badge("ERROR");
+  }
 }
 
 // ---------------------------------------------------------- inboxes & DB

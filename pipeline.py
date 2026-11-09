@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
-from typing import Any
+from typing import Any, AsyncIterator, Callable
+
+Emit = Callable[[dict[str, Any]], None]
 
 import db
 from agent import (
@@ -26,13 +29,24 @@ HOLDING_REPLY = (
 
 
 class Trace:
-    def __init__(self) -> None:
+    def __init__(self, emit: Emit | None = None) -> None:
         self.steps: list[dict[str, Any]] = []
+        self.emit = emit
         self._t0 = time.perf_counter()
 
+    def _ms(self) -> int:
+        return round((time.perf_counter() - self._t0) * 1000)
+
     def add(self, phase: str, title: str, **data: Any) -> None:
-        self.steps.append({"phase": phase, "title": title,
-                           "ms": round((time.perf_counter() - self._t0) * 1000), **data})
+        step = {"phase": phase, "title": title, "ms": self._ms(), **data}
+        self.steps.append(step)
+        if self.emit:
+            self.emit({"type": "step", **step})
+
+    def start(self, phase: str, title: str) -> None:
+        """Announce a slow operation (external API call) so the UI can show a spinner."""
+        if self.emit:
+            self.emit({"type": "phase_start", "phase": phase, "title": title, "ms": self._ms()})
 
 
 def _escalate(thread_id: str, sender: str, clean_text: str, reasons: list[str], trace: Trace) -> None:
@@ -47,8 +61,10 @@ def _escalate(thread_id: str, sender: str, clean_text: str, reasons: list[str], 
     trace.add("phase2", "Escalated to human", inboxes=[SOP_EMPLOYEE_INBOX, CUSTOMER_INBOX])
 
 
-async def process_email(sender_email: str, thread_id: str, message_id: str, body: str) -> dict[str, Any]:
-    trace = Trace()
+async def process_email(
+    sender_email: str, thread_id: str, message_id: str, body: str, emit: Emit | None = None
+) -> dict[str, Any]:
+    trace = Trace(emit)
     sender_email = sender_email.strip().lower()
 
     # ---------------- Phase 1: idempotency, vault load, preprocessing, masking
@@ -78,6 +94,7 @@ async def process_email(sender_email: str, thread_id: str, message_id: str, body
     # ---------------- Phase 2: Jev gatekeeper + deterministic router
     awaiting = bool(existing) and existing["thread_status"] == AWAITING_CUSTOMER_INFO
     thread_context = AWAITING_INFO_CONTEXT if awaiting else None
+    trace.start("phase2", "Calling Jev System 1…")
     jev: JevResult = await classify(m.masked_text, thread_context=thread_context)
     trace.add("phase2", "Jev System 1 classification", sent_to_jev=m.masked_text,
               thread_context=thread_context, jev=jev.to_dict())
@@ -102,7 +119,8 @@ async def process_email(sender_email: str, thread_id: str, message_id: str, body
         db.set_thread_status(thread_id, ESCALATED_TO_HUMAN)
         return _done(ESCALATED_TO_HUMAN, thread_id, trace, decision, jev)
 
-    ctx = SOPSharedContext(thread_id=thread_id, customer_email=sender_email, vault=dict(m.vault))
+    ctx = SOPSharedContext(thread_id=thread_id, customer_email=sender_email, vault=dict(m.vault), emit=emit)
+    trace.start("phase3", "Return Agent (gpt-4o-mini) thinking…")
     try:
         out = await run_return_agent(ctx, m.masked_text)
         trace.add("phase3", "Return Agent finished", final_output=out["final_output"])
@@ -126,3 +144,31 @@ async def process_email(sender_email: str, thread_id: str, message_id: str, body
 def _done(status: str, thread_id: str, trace: Trace, decision: RouteDecision, jev: JevResult) -> dict[str, Any]:
     return {"status": status, "thread_status": status, "thread_id": thread_id,
             "route": decision.path, "jev_source": jev.source, "trace": trace.steps}
+
+
+# Strong refs so a pipeline keeps running (and finishes its DB writes) if the client disconnects.
+_BACKGROUND: set[asyncio.Task] = set()
+
+
+async def process_email_stream(
+    sender_email: str, thread_id: str, message_id: str, body: str
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield pipeline events live: phase_start, step, agent_log, agent_delta, then done/error."""
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    async def run() -> None:
+        try:
+            result = await process_email(sender_email, thread_id, message_id, body, emit=queue.put_nowait)
+            queue.put_nowait({"type": "done", "result": result})
+        except Exception as exc:  # noqa: BLE001
+            queue.put_nowait({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
+
+    task = asyncio.create_task(run())
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
+
+    while True:
+        event = await queue.get()
+        yield event
+        if event["type"] in ("done", "error"):
+            return
