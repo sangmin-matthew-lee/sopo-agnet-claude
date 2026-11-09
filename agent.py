@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from agents import Agent, ModelSettings, RunConfig, RunContextWrapper, Runner, SQLiteSession, function_tool
 from agents.models.interface import Model
@@ -45,9 +45,14 @@ class SOPSharedContext:
     label_token: str | None = None  # token of the label issued/reused in this run
     verify_attempted: bool = False  # ownership/eligibility check has run in this turn
     step_logs: list[dict[str, Any]] = field(default_factory=list)
+    # Optional live-event sink (the UI stream). Receives each log entry as it happens.
+    emit: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False)
 
     def log(self, step: str, **data: Any) -> None:
-        self.step_logs.append({"step": step, **data})
+        entry = {"step": step, **data}
+        self.step_logs.append(entry)
+        if self.emit:
+            self.emit({"type": "agent_log", **entry})
 
 
 # --------------------------------------------------------------------- helpers
@@ -303,15 +308,34 @@ async def run_return_agent(
     session = SQLiteSession(session_id=ctx.thread_id, db_path=session_db_path or ctx.db_path or db.DB_PATH)
     agent_input = build_agent_input(masked_text, ctx.vault)
     ctx.log("agent_input", text=agent_input)
-    result = await Runner.run(
-        agent,
-        agent_input,
+    kwargs: dict[str, Any] = dict(
         context=ctx,
         session=session,
         max_turns=8,
         # Traces would include tool payloads; keep everything local.
         run_config=RunConfig(tracing_disabled=True),
     )
+    if ctx.emit is None:
+        result = await Runner.run(agent, agent_input, **kwargs)
+    else:
+        streamed = Runner.run_streamed(agent, agent_input, **kwargs)
+        async for event in streamed.stream_events():
+            _forward_model_event(ctx, event)
+        result = streamed
     final = str(result.final_output)
     ctx.log("agent_final", text=final)
     return {"final_output": final}
+
+
+def _forward_model_event(ctx: SOPSharedContext, event: Any) -> None:
+    """Relay the model's own (masked) output to the UI as it is generated."""
+    if ctx.emit is None or getattr(event, "type", None) != "raw_response_event":
+        return
+    data = event.data
+    kind = getattr(data, "type", "")
+    if kind == "response.output_item.added" and getattr(data.item, "type", "") == "function_call":
+        ctx.emit({"type": "agent_delta", "kind": "tool_start", "item_id": data.item.id, "tool": data.item.name})
+    elif kind == "response.function_call_arguments.delta":
+        ctx.emit({"type": "agent_delta", "kind": "tool_args", "item_id": data.item_id, "delta": data.delta})
+    elif kind == "response.output_text.delta":
+        ctx.emit({"type": "agent_delta", "kind": "text", "item_id": data.item_id, "delta": data.delta})

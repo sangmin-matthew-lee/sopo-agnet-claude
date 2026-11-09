@@ -57,8 +57,9 @@ http://localhost:8080/?code=pick-any-passcode
 ## Using the sandbox
 
 1. Click a scenario preset in the top bar. It fills in column ① with a sender, a new `thread_id` and an email.
-2. Click **Send to FastAPI**. Column ② shows each phase: raw vs. masked text, the local vault, Jev's scores,
-   the routing decision, and the agent's tool calls.
+2. Click **Send to FastAPI**. Column ② streams each phase live as it runs: raw vs. masked text, the local
+   vault, Jev's scores, the routing decision, and the agent's tool calls. You can watch the agent write its
+   email token by token. Click **⏩ Skip** to stop the typing animation.
 3. Column ③ shows the resulting emails in `CUSTOMER_INBOX` / `SOP_EMPLOYEE_INBOX`, plus the `orders` and
    `thread_vaults` tables.
 
@@ -102,13 +103,14 @@ message is auto-processed. It's escalated to the SOP human inbox instead, and th
 
 All `/api/*` endpoints require the `X-Demo-Passcode` header.
 
-| Method | Path                  | Description                                                                                            |
-| ------ | --------------------- | ------------------------------------------------------------------------------------------------------ |
-| `GET`  | `/`                   | Sandbox UI                                                                                             |
-| `GET`  | `/healthz`            | Health check (no passcode)                                                                             |
-| `POST` | `/api/simulate-email` | Body: `{sender_email, thread_id, message_id, body}`. Returns the final status and a step-by-step trace |
-| `POST` | `/api/reset-db`       | Drop and reseed all tables                                                                             |
-| `GET`  | `/api/state`          | Orders, emails, thread vaults, and which API keys are loaded                                           |
+| Method | Path                         | Description                                                                                                                          |
+| ------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET`  | `/`                          | Sandbox UI                                                                                                                           |
+| `GET`  | `/healthz`                   | Health check (no passcode)                                                                                                           |
+| `POST` | `/api/simulate-email`        | Body: `{sender_email, thread_id, message_id, body}`. Returns the final status and a step-by-step trace                               |
+| `POST` | `/api/simulate-email/stream` | Same body and pipeline, streamed live as Server-Sent Events (`phase_start`, `step`, `agent_log`, `agent_delta`, then `done`/`error`) |
+| `POST` | `/api/reset-db`              | Drop and reseed all tables                                                                                                           |
+| `GET`  | `/api/state`                 | Orders, emails, thread vaults, and which API keys are loaded                                                                         |
 
 Example:
 
@@ -126,7 +128,7 @@ Reusing a `message_id` returns `DUPLICATE_IGNORED`.
 uv run pytest
 ```
 
-The 95 tests run fully offline and need no API keys. Jev is stubbed with `httpx.MockTransport`/monkeypatch,
+The 107 tests run fully offline and need no API keys. Jev is stubbed with `httpx.MockTransport`/monkeypatch,
 and the Return Agent runs through the real `Runner` + `SQLiteSession` with a scripted fake model
 (`tests/fake_model.py`).
 
