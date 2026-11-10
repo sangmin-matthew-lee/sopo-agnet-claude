@@ -55,7 +55,7 @@ QUESTIONS: dict[str, Any] = {
     },
 }
 
-Path = Literal["A_BLOCK", "B_ESCALATE", "C_RETURN_AGENT"]
+Path = Literal["A_BLOCK", "B_ESCALATE", "C_RETURN_AGENT", "C_TECH_AGENT"]
 
 # Static, PII-free context sent with replies on threads where we asked the customer for missing info.
 # Without it, a bare reply like "Found it: <ORDER_TOKEN_1>" looks unrelated to returns (non_sop).
@@ -63,6 +63,15 @@ AWAITING_INFO_CONTEXT = (
     "email_body is the customer's reply in an existing product-return (RMA) thread. "
     "We previously asked the customer for missing return details (an order number or part number), "
     "so a short reply that only supplies an order or part token is a continuation of a return request."
+)
+
+# Same idea for a tech-support thread where we offered meeting slots or asked for the part number:
+# "Option 2 works" or "It's <PART_TOKEN_1>, Thursday 10am" continues the scheduling conversation.
+TECH_SCHEDULING_CONTEXT = (
+    "email_body is the customer's reply in an existing technical-support thread. We previously offered "
+    "meeting times with an engineer, asked for the part number, or already booked a meeting, so a short reply "
+    "that picks a time, proposes a time, says a time does not work, asks to reschedule, or supplies a part "
+    "token is a continuation of the tech support request."
 )
 
 
@@ -169,27 +178,28 @@ async def classify(
             await client.aclose()
 
 
-def route(result: JevResult, awaiting_customer_info: bool = False) -> RouteDecision:
-    """Deterministic routing. Order matters: Block > Escalate > Return Agent.
+def route(
+    result: JevResult, awaiting_customer_info: bool = False, awaiting_tech_schedule: bool = False
+) -> RouteDecision:
+    """Deterministic routing. Order matters: Block > Escalate > Return / Tech Support Agent.
 
     `awaiting_customer_info`: the thread is an open return where we asked the customer for a
     missing order/part number. A calm, non-spam reply there continues the return even if Jev
     reads the bare reply as non_sop or with low confidence.
+    `awaiting_tech_schedule`: same, for a tech-support thread waiting on a time or part number.
     """
-    continuation = (
-        awaiting_customer_info
-        and result.source == "jev"
-        and result.intent in ("return", "non_sop")
+    calm = (
+        result.source == "jev"
         and result.spam_probability < SPAM_THRESHOLD
         and result.frustration_level < FRUSTRATION_THRESHOLD
     )
-    if continuation:
-        return RouteDecision("C_RETURN_AGENT", None, [
-            "reply on a thread AWAITING_CUSTOMER_INFO",
-            f"intent={result.intent} ({result.intent_confidence:.2f}), "
-            f"spam={result.spam_probability:.2f} < {SPAM_THRESHOLD}, "
-            f"frustration={result.frustration_level:.2f} < {FRUSTRATION_THRESHOLD}",
-        ])
+    detail = (f"intent={result.intent} ({result.intent_confidence:.2f}), "
+              f"spam={result.spam_probability:.2f} < {SPAM_THRESHOLD}, "
+              f"frustration={result.frustration_level:.2f} < {FRUSTRATION_THRESHOLD}")
+    if awaiting_customer_info and calm and result.intent in ("return", "non_sop"):
+        return RouteDecision("C_RETURN_AGENT", None, ["reply on a thread AWAITING_CUSTOMER_INFO", detail])
+    if awaiting_tech_schedule and calm and result.intent in ("tech_support", "non_sop"):
+        return RouteDecision("C_TECH_AGENT", None, ["reply on a tech scheduling thread (AWAITING_CUSTOMER_SCHEDULE / MEETING_CONFIRMED)", detail])
 
     # Path A — Block
     block = []
@@ -221,5 +231,13 @@ def route(result: JevResult, awaiting_customer_info: bool = False) -> RouteDecis
             [f"intent == return (confidence={result.intent_confidence:.2f} >= {INTENT_CONFIDENCE_THRESHOLD})"],
         )
 
-    # tech_support / refund: no automated specialist exists yet -> human.
+    # Path C — Tech Support Agent (meeting scheduler)
+    if result.intent == "tech_support":
+        return RouteDecision(
+            "C_TECH_AGENT",
+            None,
+            [f"intent == tech_support (confidence={result.intent_confidence:.2f} >= {INTENT_CONFIDENCE_THRESHOLD})"],
+        )
+
+    # refund: no automated specialist exists yet -> human.
     return RouteDecision("B_ESCALATE", "ESCALATED_TO_HUMAN", [f"intent == {result.intent}: no automated handler"])

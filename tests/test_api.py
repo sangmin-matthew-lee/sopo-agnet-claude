@@ -5,6 +5,7 @@ import agent as agent_mod
 import db
 import main
 import pipeline
+import tech_agent
 from jev_router import parse_response
 from masker import contains_raw_pii
 from tests.fake_model import ScriptedModel
@@ -45,8 +46,14 @@ def stub(monkeypatch):
         state["models"].append(model)
         return await agent_mod.run_return_agent(ctx, masked_text, model=model)
 
+    async def fake_tech_run(ctx, masked_text, **kw):
+        model = ScriptedModel(state["scripts"].pop(0))
+        state["models"].append(model)
+        return await tech_agent.run_tech_agent(ctx, masked_text, model=model)
+
     monkeypatch.setattr(pipeline, "classify", fake_classify)
     monkeypatch.setattr(pipeline, "run_return_agent", fake_run)
+    monkeypatch.setattr(pipeline, "run_tech_agent", fake_tech_run)
     return state
 
 
@@ -82,7 +89,7 @@ def test_rate_limit(client, monkeypatch):
 
 def test_index_served(client):
     r = client.get("/")
-    assert r.status_code == 200 and "Send to FastAPI" in r.text
+    assert r.status_code == 200 and "Customer Simulator" in r.text
 
 
 # ------------------------------------------------------------- scenarios
@@ -223,3 +230,158 @@ def test_multi_turn_reply_classified_non_sop_still_continues(client, stub):
     out = send(client, "Found it — it's ord 9988.", msg="m-2")
     assert out["status"] == "RETURN_LABEL_ISSUED" and out["route"] == "C_RETURN_AGENT"
     assert seen_ctx[0] is None and "existing product-return" in seen_ctx[1]
+
+
+# ------------------------------------------------------------- tech support
+
+def offer_script(starts):
+    return [
+        ("tool", "check_meeting_availability", {"part_token": "<PART_TOKEN_1>", "requested_starts": starts}),
+        ("tool", "send_tech_support_emails", {
+            "customer_subject": "Times for your <PART_TOKEN_1> session",
+            "customer_body": "Which of these works?", "sop_summary": "", "awaiting_customer": True}),
+        ("text", "offered"),
+    ]
+
+
+def book_script(start, requested=None, reschedule=False):
+    return [
+        ("tool", "check_meeting_availability",
+         {"part_token": "<PART_TOKEN_1>", "requested_starts": [requested or start], "reschedule": reschedule}),
+        ("tool", "book_tech_meeting", {"part_token": "<PART_TOKEN_1>", "start": start}),
+        ("tool", "send_tech_support_emails", {
+            "customer_subject": "Confirmed: <PART_TOKEN_1> session",
+            "customer_body": "Join at <LINK_TOKEN_1>.", "sop_summary": "", "awaiting_customer": False}),
+        ("text", "booked"),
+    ]
+
+
+def test_tech_happy_path_books_meeting(client, stub):
+    free = tech_agent.demo_slots()["free_slot"]
+    stub["jev"] = jev(intent="tech_support")
+    stub["scripts"] = [book_script(free["iso"])]
+    out = send(client, f"Our ab1234 overheats after 10 minutes. Can we talk {free['spoken']}?")
+    assert out["status"] == "MEETING_CONFIRMED" and out["route"] == "C_TECH_AGENT"
+    link = db.load_thread("th-1")["vault"]["<LINK_TOKEN_1>"]
+    assert inbox("CUSTOMER_INBOX")[0]["body"] == f"Join at {link}."
+    assert len(inbox(tech_agent.ENGINEER_INBOX)) == 1
+    assert not contains_raw_pii(stub["models"][0].seen_inputs[0])
+
+
+def test_tech_multi_turn_offer_then_pick(client, stub):
+    busy = tech_agent.demo_slots()["busy_slot"]
+    stub["jev"] = jev(intent="tech_support")
+    stub["scripts"] = [offer_script([busy["iso"]])]
+    out1 = send(client, f"AB-1234 keeps faulting. Could an engineer join {busy['spoken']}?", msg="m-1")
+    assert out1["status"] == "AWAITING_CUSTOMER_SCHEDULE"
+    assert inbox(tech_agent.ENGINEER_INBOX) == []  # the engineer is never bothered while we negotiate
+    offered = db.get_tech_schedule("th-1")["offered_slots"]
+
+    seen_ctx = []
+
+    async def reply_classify(masked_text, thread_context=None, **kw):
+        seen_ctx.append(thread_context)
+        return jev(intent="non_sop", conf=0.9)  # bare replies often look non_sop to Jev
+
+    pipeline.classify = reply_classify
+    stub["scripts"] = [book_script(offered[1])]
+    out2 = send(client, "Option 2 works for us.\n\nOn Mon SOP wrote:\n> Which of these works?", msg="m-2")
+    assert out2["status"] == "MEETING_CONFIRMED" and out2["route"] == "C_TECH_AGENT"
+    assert "technical-support thread" in seen_ctx[0]
+    assert offered[1] in stub["models"][1].seen_inputs[0]  # previously offered slots are given to the agent
+    assert len(inbox(tech_agent.ENGINEER_INBOX)) == 1
+
+
+def test_tech_no_times_then_pick_then_reschedule(client, stub):
+    """No times -> offered (agent may not book) -> customer picks -> booked -> "doesn't work" -> moved."""
+    stub["jev"] = jev(intent="tech_support")
+    stub["scripts"] = [offer_script([])]
+    out1 = send(client, "Our AB-1234 overheats. Can an engineer help?", msg="m-1")
+    assert out1["status"] == "AWAITING_CUSTOMER_SCHEDULE" and inbox(tech_agent.ENGINEER_INBOX) == []
+    offered = db.get_tech_schedule("th-1")["offered_slots"]
+
+    async def reply_classify(masked_text, thread_context=None, **kw):
+        return jev(intent="non_sop", conf=0.9)  # short replies look non_sop without context
+
+    pipeline.classify = reply_classify
+    stub["scripts"] = [book_script(offered[0])]
+    assert send(client, "Option 1 works.", msg="m-2")["status"] == "MEETING_CONFIRMED"
+
+    stub["scripts"] = [book_script(offered[1], reschedule=True)]
+    out3 = send(client, "Sorry, that time doesn't work anymore. Could we do the second option?", msg="m-3")
+    assert out3["status"] == "MEETING_CONFIRMED" and out3["route"] == "C_TECH_AGENT"  # used to be A_BLOCK
+    assert db.get_tech_schedule("th-1")["meeting_start"] == tech_agent.sch.to_utc_iso(
+        tech_agent.sch.parse_slot(offered[1], tech_agent.sch.now_local()))
+    assert len([e for e in db.list_calendar_events() if e["kind"] == "MEETING"]) == 2
+    assert len(inbox(tech_agent.ENGINEER_INBOX)) in (2, 3)  # invite + update (or cancel + new invite)
+
+
+def test_new_email_about_a_booked_meeting_reschedules_it(client, stub):
+    demo = tech_agent.demo_slots()
+    free, free2 = demo["free_slot"], demo["free_slot_2"]
+    stub["jev"] = jev(intent="tech_support")
+    stub["scripts"] = [book_script(free["iso"])]
+    assert send(client, f"AB-1234 overheats. {free['spoken']}?", msg="m-1")["status"] == "MEETING_CONFIRMED"
+
+    seen_ctx = []
+
+    async def classify_new(masked_text, thread_context=None, **kw):
+        seen_ctx.append(thread_context)
+        return jev(intent="non_sop", conf=0.9)  # without context, "can't make our call" looks non_sop
+
+    pipeline.classify = classify_new
+    stub["scripts"] = [book_script(free2["iso"], reschedule=True)]
+    out = send(client, f"I can't make our call about AB-1234. Could we move it to {free2['spoken']}?",
+               thread="th-2", msg="m-2")
+    assert out["status"] == "MEETING_CONFIRMED" and out["route"] == "C_TECH_AGENT"
+    assert "technical-support thread" in seen_ctx[0]
+    assert db.get_tech_schedule("th-1") is None and db.get_tech_schedule("th-2")["meeting_start"]
+    assert len([e for e in db.list_calendar_events() if e["kind"] == "MEETING"]) == 2  # moved, not duplicated
+
+
+def test_spam_on_a_confirmed_tech_thread_is_still_blocked(client, stub):
+    free = tech_agent.demo_slots()["free_slot"]
+    stub["jev"] = jev(intent="tech_support")
+    stub["scripts"] = [book_script(free["iso"])]
+    assert send(client, f"AB-1234 help, {free['spoken']}?", msg="m-1")["status"] == "MEETING_CONFIRMED"
+    stub["jev"] = jev(intent="non_sop", spam=0.95)
+    assert send(client, "Buy crypto now!!!", msg="m-2")["status"] == "BLOCKED_SPAM"
+
+
+def test_tech_round_limit_escalates(client, stub):
+    stub["jev"] = jev(intent="tech_support")
+    stub["scripts"] = [offer_script([]) for _ in range(tech_agent.MAX_SCHEDULING_ROUNDS + 1)]
+    statuses = [send(client, f"None of those work for AB-1234. Try again {i}", msg=f"m-{i}")["status"]
+                for i in range(tech_agent.MAX_SCHEDULING_ROUNDS + 1)]
+    assert statuses == ["AWAITING_CUSTOMER_SCHEDULE"] * tech_agent.MAX_SCHEDULING_ROUNDS + ["ESCALATED_TO_HUMAN"]
+    assert inbox("SOP_EMPLOYEE_INBOX")[0]["subject"].startswith("[ESCALATION] Could not agree")
+    assert inbox(tech_agent.ENGINEER_INBOX) == []
+
+
+def test_tech_not_owner_escalates(client, stub):
+    stub["jev"] = jev(intent="tech_support")
+    stub["scripts"] = [offer_script([])]
+    out = send(client, "Need an engineer for AB-1234 asap.", sender="mary@betaindustries.com")
+    assert out["status"] == "ESCALATED_TO_HUMAN"
+    assert inbox(tech_agent.ENGINEER_INBOX) == []
+    assert len(inbox("CUSTOMER_INBOX")) == 1  # only the holding reply, never the slot offer
+
+
+def test_state_exposes_tech_data(client):
+    s = client.get("/api/state", headers=H).json()
+    assert {"staff", "calendar_events", "tech_schedules", "tech_demo"} <= set(s)
+    assert s["tech_demo"]["free_slot"]["iso"] and s["tech_demo"]["busy_slot"]["iso"]
+    assert s["tech_demo"]["busy_slot_mary"]["iso"]
+
+
+def test_openai_guard_fails_closed_to_human(client, stub, monkeypatch):
+    """If raw data ever slips into the agent input, nothing is sent to OpenAI and a human takes over."""
+    monkeypatch.setattr(tech_agent, "build_tech_agent_input", lambda *a, **k: "leaked AB-1234")
+    stub["jev"] = jev(intent="tech_support")
+    stub["scripts"] = [offer_script([])]
+    out = send(client, "Our AB-1234 overheats, can we meet?")
+    assert out["status"] == "ESCALATED_TO_HUMAN"
+    assert stub["models"][0].calls == 0
+    errors = [s for s in out["trace"] if s.get("error")]
+    assert errors and "PIILeakError" in errors[0]["error"]
+    assert inbox(tech_agent.ENGINEER_INBOX) == []

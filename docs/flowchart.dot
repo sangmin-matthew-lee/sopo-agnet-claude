@@ -1,0 +1,77 @@
+// Render: dot -Tpng -Gdpi=160 docs/flowchart.dot -o docs/flowchart.png
+digraph SOPO {
+  graph [rankdir=TB, fontname="Apple SD Gothic Neo", nodesep=0.35, ranksep=0.45, bgcolor="white", pad=0.3];
+  node  [shape=box, style="rounded,filled", fontname="Apple SD Gothic Neo", fontsize=12, color="#94a3b8",
+         fillcolor="#f8fafc", margin="0.18,0.08"];
+  edge  [fontname="Apple SD Gothic Neo", fontsize=10, color="#64748b"];
+
+  email [label="📧 고객 이메일 도착\n(sender · thread_id · message_id · 본문)", fillcolor="#e0f2fe", color="#0284c7"];
+
+  subgraph cluster_p1 {
+    label="Phase 1 · 100% 로컬 Python"; style="rounded,dashed"; color="#94a3b8"; fontsize=12;
+    dup   [label="중복 message_id?"; shape=diamond, style="filled", fillcolor="#fff"];
+    mask  [label="전처리 (HTML·인용·서명 제거)\nPII 마스킹: ORD-9988 → <ORDER_TOKEN_1>\nAB-1234 → <PART_TOKEN_1>  (원본은 로컬 Vault에만)"];
+  }
+  ignored [label="DUPLICATE_IGNORED\n(아무것도 안 함)", fillcolor="#f1f5f9"];
+
+  subgraph cluster_p2 {
+    label="Phase 2 · Jev (System 1) — 마스킹된 텍스트만 전송"; style="rounded,dashed"; color="#94a3b8"; fontsize=12;
+    jev   [label="Jev 분류\n스팸 확률 · 의도(intent) · 분노 지수", fillcolor="#ede9fe", color="#7c3aed"];
+    route [label="결정적 라우터 (Python 규칙)"; shape=diamond, style="filled", fillcolor="#fff"];
+  }
+
+  blockA [label="Path A · 차단\nBLOCKED_SPAM\n(OpenAI 비용 $0)", fillcolor="#ffe4e6", color="#e11d48"];
+  humanB [label="Path B · 사람에게 이관\nESCALATED_TO_HUMAN\nSOP 알림 + 고객 안내 메일", fillcolor="#fef3c7", color="#d97706"];
+
+  subgraph cluster_ret {
+    label="Path C1 · Return Agent (gpt-4o-mini)"; style="rounded"; color="#059669"; fontsize=12;
+    rmiss [label="주문번호/부품번호 있음?"; shape=diamond, style="filled", fillcolor="#fff"];
+    rask  [label="고객에게 누락 정보 요청\nAWAITING_CUSTOMER_INFO\n(같은 스레드 답장 → 계속)"];
+    rown  [label="3-way 확인\n주문 · 부품 · 보낸사람 일치?"; shape=diamond, style="filled", fillcolor="#fff"];
+    relig [label="반품 자격\n배송완료 · 30일 이내 · 수량"; shape=diamond, style="filled", fillcolor="#fff"];
+    rdeny [label="RETURN_DENIED\n사유 안내 + SOP 통지"];
+    rlabel[label="반품 라벨 발급 (이미 있으면 재사용)\nRETURN_LABEL_ISSUED", fillcolor="#d1fae5", color="#059669"];
+  }
+
+  subgraph cluster_tech {
+    label="Path C2 · Tech Support Agent (gpt-4o-mini)"; style="rounded"; color="#0284c7"; fontsize=12;
+    tpart [label="부품번호 있음?\n(없으면 고객의 예정 미팅 검색)"; shape=diamond, style="filled", fillcolor="#fff"];
+    task  [label="부품번호·희망 시간 요청\nAWAITING_CUSTOMER_SCHEDULE"];
+    town  [label="이 고객이 해당 부품을 구매했나?"; shape=diamond, style="filled", fillcolor="#fff"];
+    tcal  [label="담당 엔지니어(우선순위) + 고객 AM\n캘린더 free/busy 교집합"];
+    tok   [label="고객이 요청한 시간이 비어있나?"; shape=diamond, style="filled", fillcolor="#fff"];
+    toffer[label="빈 시간 3개 제안 (고객이 선택)\nAWAITING_CUSTOMER_SCHEDULE\n최대 3회 → 이후 사람에게 이관"];
+    tbook [label="미팅 예약 / 기존 미팅 이동\n엔지니어·AM에게 초대장 각 1통\nMEETING_CONFIRMED (링크는 <LINK_TOKEN>)", fillcolor="#e0f2fe", color="#0284c7"];
+  }
+
+  security [label="[SECURITY] 이관\n스레드 잠금, 아무것도 발송/예약 안 함", fillcolor="#fef3c7", color="#d97706"];
+  dispatch [label="Phase 4 · 로컬 발송\n토큰 → 실제 값으로 복원 후 이메일 저장\n(CUSTOMER / SOP / ENGINEER INBOX)", fillcolor="#f0fdf4", color="#16a34a"];
+  guard    [label="🔒 OpenAI 호출 전 가드\n원본 주문/부품/라벨/링크·직원 정보가\n보이면 즉시 중단 → 사람에게 이관", shape=note, fillcolor="#fff7ed", color="#ea580c"];
+
+  email -> dup;
+  dup -> ignored [label="예"];
+  dup -> mask [label="아니오"];
+  mask -> jev -> route;
+  route -> blockA [label="스팸 ≥ 0.75\n또는 non_sop"];
+  route -> humanB [label="분노 ≥ 1.5 · human_needed\nrefund · 신뢰도 < 0.60"];
+  route -> rmiss  [label="return"];
+  route -> tpart  [label="tech_support\n(또는 진행 중인 미팅 스레드)"];
+
+  rmiss -> rask  [label="아니오"];
+  rmiss -> rown  [label="예"];
+  rown -> security [label="불일치 (스푸핑)"];
+  rown -> relig [label="일치"];
+  relig -> rdeny [label="불가"];
+  relig -> rlabel [label="가능"];
+
+  tpart -> task [label="아니오"];
+  tpart -> town [label="예"];
+  town -> security [label="아니오"];
+  town -> tcal [label="예"];
+  tcal -> tok;
+  tok -> tbook [label="예"];
+  tok -> toffer [label="아니오 / 시간 없음"];
+
+  {rask rdeny rlabel task toffer tbook} -> dispatch [style=dashed];
+  guard -> route [style=invis];
+}

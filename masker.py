@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 # ------------------------------------------------------------- preprocessing
 
 _TAG_RE = re.compile(r"<\s*(br|/p|/div|/li|/tr|/h\d)\s*/?\s*>", re.IGNORECASE)
-_ANY_TAG_RE = re.compile(r"<(?!(?:ORDER|PART|LABEL)_TOKEN_\d+>)[^>]+>", re.IGNORECASE)
+_ANY_TAG_RE = re.compile(r"<(?!(?:ORDER|PART|LABEL|LINK)_TOKEN_\d+>)[^>]+>", re.IGNORECASE)
 _STYLE_SCRIPT_RE = re.compile(r"<(style|script)[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
 
 # Reply headers: everything from here down is the quoted previous message.
@@ -62,6 +62,8 @@ _STOPWORDS = (
     "ord"
 )
 
+# Meeting links we generate (customers may quote them back in replies).
+LINK_RE = re.compile(r"https?://meet\.axmattsupply\.com/[A-Za-z0-9_-]+", re.IGNORECASE)
 LABEL_RE = re.compile(r"\bUPS\s*-?\s*RMA\s*-?\s*ORD\s*-?\s*(\d{3,8})\b", re.IGNORECASE)
 # ord/9988, ORD - 9988, ord9988, ORD#9988, ord_9988
 ORDER_RE = re.compile(r"\bORD\s*(?:[-/_#:.]\s*)?(\d{3,8})\b", re.IGNORECASE)
@@ -70,9 +72,9 @@ PART_RE = re.compile(
     rf"\b(?!(?:{_STOPWORDS})\b)([A-Z]{{2}})\s*(?:[-/_]\s*)?(\d{{4}})\b", re.IGNORECASE
 )
 
-TOKEN_RE = re.compile(r"<(ORDER|PART|LABEL)_TOKEN_(\d+)>")
+TOKEN_RE = re.compile(r"<(ORDER|PART|LABEL|LINK)_TOKEN_(\d+)>")
 
-KINDS = ("ORDER", "PART", "LABEL")
+KINDS = ("ORDER", "PART", "LABEL", "LINK")
 
 
 def normalize_order(digits: str) -> str:
@@ -124,7 +126,8 @@ def mask_text(text: str, vault: dict[str, str] | None = None, preprocess: bool =
     new_tokens: dict[str, str] = {}
     clean = preprocess_email(text) if preprocess else (text or "")
 
-    masked = LABEL_RE.sub(lambda m: add_to_vault(vault, "LABEL", normalize_label(m.group(1)), new_tokens), clean)
+    masked = LINK_RE.sub(lambda m: add_to_vault(vault, "LINK", m.group(0), new_tokens), clean)
+    masked = LABEL_RE.sub(lambda m: add_to_vault(vault, "LABEL", normalize_label(m.group(1)), new_tokens), masked)
     masked = ORDER_RE.sub(lambda m: add_to_vault(vault, "ORDER", normalize_order(m.group(1)), new_tokens), masked)
     masked = PART_RE.sub(
         lambda m: add_to_vault(vault, "PART", normalize_part(m.group(1), m.group(2)), new_tokens), masked
@@ -138,5 +141,5 @@ def unmask_text(text: str, vault: dict[str, str]) -> str:
 
 
 def contains_raw_pii(text: str) -> bool:
-    """True if text still contains anything that looks like an order, part, or label."""
-    return bool(LABEL_RE.search(text) or ORDER_RE.search(text) or PART_RE.search(text))
+    """True if text still contains anything that looks like an order, part, label, or meeting link."""
+    return bool(LINK_RE.search(text) or LABEL_RE.search(text) or ORDER_RE.search(text) or PART_RE.search(text))
