@@ -102,7 +102,7 @@ def test_send_emails_unmasks_tokens(db_path):
     assert cust["body"] == "Use label UPS-RMA-ORD-9988 for AB-1234."
     assert cust["recipient_email"] == "john@acmecorp.com"
     sop = inbox(db_path, "SOP_EMPLOYEE_INBOX")[0]
-    assert sop["body"] == "Label UPS-RMA-ORD-9988 issued." and sop["recipient_email"] == db.SOP_OWNER_EMAIL
+    assert sop["body"] == "Label UPS-RMA-ORD-9988 issued." and sop["recipient_email"] == db.AM_JOHN
     assert ctx.thread_status == "RETURN_LABEL_ISSUED"
 
 
@@ -224,3 +224,52 @@ async def test_spoof_send_first_then_verify_never_reaches_attacker(db_path):
     attacker_mail = [e for e in db.list_emails(db_path) if e["recipient_email"] == "hacker@gmail.com"]
     assert [e["subject"] for e in attacker_mail] == ["Your return request is under review"]
     assert "ORD-9988" not in attacker_mail[0]["body"]
+
+
+# ------------------------------------------------------- OpenAI privacy guard
+
+import pytest  # noqa: E402
+
+from agent import guard_agent_input, guard_tool_result, run_agent  # noqa: E402
+from jev_router import PIILeakError  # noqa: E402
+
+
+async def test_raw_data_in_agent_input_never_reaches_openai(db_path):
+    model = ScriptedModel([("text", "should not run")])
+    ctx = ctx_for(db_path)
+    with pytest.raises(PIILeakError):
+        await run_agent(build_return_agent(model), ctx, "Return AB-1234 from ORD-9988")
+    assert model.calls == 0
+    assert ctx.step_logs[-1]["step"] == "guard" and ctx.step_logs[-1]["where"] == "agent_input"
+
+
+@pytest.mark.parametrize("leak", [
+    "label UPS-RMA-ORD-9988", "part AB-1234", "https://meet.axmattsupply.com/TS-12ab34cd",
+    "ask alex.chen@axmattsupply.com", "Sarah Kim will join", "sent to john@acmecorp.com",
+    "write to sales@axmattsupply.com",
+])
+def test_tool_result_guard_blocks_local_data(db_path, leak):
+    with pytest.raises(PIILeakError):
+        guard_tool_result(ctx_for(db_path), "some_tool", f"APPROVED: {leak}")
+
+
+def test_guards_pass_masked_text(db_path):
+    ctx = ctx_for(db_path)
+    text = "APPROVED: label <LABEL_TOKEN_1> for <PART_TOKEN_1>; the engineer and the account manager were invited."
+    assert guard_tool_result(ctx, "t", text) == text
+    assert guard_agent_input(ctx, "Return <PART_TOKEN_1> from <ORDER_TOKEN_1>") .startswith("Return")
+
+
+async def test_tool_result_leak_aborts_the_run(db_path, monkeypatch):
+    import agent as agent_mod
+    monkeypatch.setattr(agent_mod, "verify_order_and_create_label_impl",
+                        lambda ctx, o, p, q: "APPROVED: label UPS-RMA-ORD-9988")  # a buggy tool
+    model = ScriptedModel([
+        ("tool", "verify_order_and_create_label",
+         {"order_token": "<ORDER_TOKEN_1>", "part_token": "<PART_TOKEN_1>", "quantity": 1}),
+        ("text", "never reached"),
+    ])
+    with pytest.raises(Exception) as err:  # the SDK wraps tool exceptions in UserError
+        await run_return_agent(ctx_for(db_path), "Return <PART_TOKEN_1> from <ORDER_TOKEN_1>", model=model)
+    assert isinstance(err.value.__cause__, PIILeakError)
+    assert model.calls == 1  # the leaking result was never sent back to the model

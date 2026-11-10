@@ -97,3 +97,12 @@ def test_preprocess_strips_html():
     r = mask_text(text)
     assert "<b>" not in r.clean_text
     assert r.masked_text == "Return <PART_TOKEN_1> from <ORDER_TOKEN_1>"
+
+
+def test_meeting_link_is_masked_and_restored():
+    link = "https://meet.axmattsupply.com/TS-1a2b3c4d"
+    m = mask_text(f"Is {link} still the right link for AB-1234?")
+    assert m.masked_text == "Is <LINK_TOKEN_1> still the right link for <PART_TOKEN_1>?"
+    assert m.vault["<LINK_TOKEN_1>"] == link
+    assert contains_raw_pii(link) and not contains_raw_pii(m.masked_text)
+    assert unmask_text(m.masked_text, m.vault).startswith(f"Is {link}")

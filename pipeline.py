@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Callable
 Emit = Callable[[dict[str, Any]], None]
 
 import db
+import scheduling as sch
 from agent import (
     AWAITING_CUSTOMER_INFO,
     CUSTOMER_INBOX,
@@ -18,8 +19,9 @@ from agent import (
     SOPSharedContext,
     run_return_agent,
 )
-from jev_router import AWAITING_INFO_CONTEXT, JevResult, RouteDecision, classify, route
+from jev_router import AWAITING_INFO_CONTEXT, TECH_SCHEDULING_CONTEXT, JevResult, RouteDecision, classify, route
 from masker import mask_text
+from tech_agent import AWAITING_CUSTOMER_SCHEDULE, MEETING_CONFIRMED, TechSupportContext, run_tech_agent
 
 HOLDING_REPLY = (
     "Thank you for reaching out. Your message has been forwarded to a member of our "
@@ -92,13 +94,20 @@ async def process_email(
     db.save_thread(thread_id, sender_email, m.vault, "PROCESSING")
 
     # ---------------- Phase 2: Jev gatekeeper + deterministic router
-    awaiting = bool(existing) and existing["thread_status"] == AWAITING_CUSTOMER_INFO
-    thread_context = AWAITING_INFO_CONTEXT if awaiting else None
+    prior_status = existing["thread_status"] if existing else None
+    awaiting = prior_status == AWAITING_CUSTOMER_INFO
+    # A booked meeting keeps the thread open too: "that time doesn't work" is a reschedule, not spam.
+    awaiting_tech = prior_status in (AWAITING_CUSTOMER_SCHEDULE, MEETING_CONFIRMED)
+    if not awaiting and not awaiting_tech and db.has_upcoming_meeting(sender_email, sch.to_utc_iso(sch.now_local())):
+        # A NEW email from someone with a booked meeting ("I can't make our call") is about that meeting.
+        awaiting_tech = True
+        trace.add("phase2", "Sender has an upcoming tech meeting → scheduling context", local_only=True)
+    thread_context = AWAITING_INFO_CONTEXT if awaiting else TECH_SCHEDULING_CONTEXT if awaiting_tech else None
     trace.start("phase2", "Calling Jev System 1…")
     jev: JevResult = await classify(m.masked_text, thread_context=thread_context)
     trace.add("phase2", "Jev System 1 classification", sent_to_jev=m.masked_text,
               thread_context=thread_context, jev=jev.to_dict())
-    decision: RouteDecision = route(jev, awaiting_customer_info=awaiting)
+    decision: RouteDecision = route(jev, awaiting_customer_info=awaiting, awaiting_tech_schedule=awaiting_tech)
     trace.add("phase2", f"Route → {decision.path}", decision=decision.to_dict())
 
     if decision.path == "A_BLOCK":
@@ -111,22 +120,25 @@ async def process_email(
         db.set_thread_status(thread_id, ESCALATED_TO_HUMAN)
         return _done(ESCALATED_TO_HUMAN, thread_id, trace, decision, jev)
 
-    # ---------------- Phase 3 & 4: Return agent + local tools
+    # ---------------- Phase 3 & 4: specialist agent + local tools
+    tech = decision.path == "C_TECH_AGENT"
+    name = "Tech Support Agent" if tech else "Return Agent"
     if not os.environ.get("OPENAI_API_KEY"):
-        reasons = ["OPENAI_API_KEY is not set; Return Agent unavailable"]
-        trace.add("phase3", "Return Agent unavailable — failing closed", reasons=reasons)
+        reasons = [f"OPENAI_API_KEY is not set; {name} unavailable"]
+        trace.add("phase3", f"{name} unavailable — failing closed", reasons=reasons)
         _escalate(thread_id, sender_email, m.clean_text, reasons, trace)
         db.set_thread_status(thread_id, ESCALATED_TO_HUMAN)
         return _done(ESCALATED_TO_HUMAN, thread_id, trace, decision, jev)
 
-    ctx = SOPSharedContext(thread_id=thread_id, customer_email=sender_email, vault=dict(m.vault), emit=emit)
-    trace.start("phase3", "Return Agent (gpt-4o-mini) thinking…")
+    common = dict(thread_id=thread_id, customer_email=sender_email, vault=dict(m.vault), emit=emit)
+    ctx = TechSupportContext(**common, customer_message=m.clean_text) if tech else SOPSharedContext(**common)
+    trace.start("phase3", f"{name} (gpt-4o-mini) thinking…")
     try:
-        out = await run_return_agent(ctx, m.masked_text)
-        trace.add("phase3", "Return Agent finished", final_output=out["final_output"])
+        out = await (run_tech_agent if tech else run_return_agent)(ctx, m.masked_text)
+        trace.add("phase3", f"{name} finished", final_output=out["final_output"], agent=name)
     except Exception as exc:  # noqa: BLE001 — any agent failure must fail closed
-        trace.add("phase3", "Return Agent error — failing closed", error=f"{type(exc).__name__}: {exc}")
-        if not ctx.locked:
+        trace.add("phase3", f"{name} error — failing closed", error=f"{type(exc).__name__}: {exc}", agent=name)
+        if not ctx.locked and ctx.thread_status != ESCALATED_TO_HUMAN:
             _escalate(thread_id, sender_email, m.clean_text, [f"agent error: {type(exc).__name__}"], trace)
         ctx.thread_status = ctx.thread_status or ESCALATED_TO_HUMAN
     finally:
@@ -134,7 +146,7 @@ async def process_email(
 
     status = ctx.thread_status
     if status is None:
-        _escalate(thread_id, sender_email, m.clean_text, ["Return Agent took no action"], trace)
+        _escalate(thread_id, sender_email, m.clean_text, [f"{name} took no action"], trace)
         status = ESCALATED_TO_HUMAN
     db.save_thread(thread_id, sender_email, ctx.vault, status)
     trace.add("phase4", "Thread vault saved", vault=ctx.vault, thread_status=status)

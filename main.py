@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 import db
+from tech_agent import demo_slots
 from pipeline import process_email, process_email_stream
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -29,7 +30,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="SOP Return Orchestrator", lifespan=lifespan)
+app = FastAPI(title="SOP Return & Tech Support Orchestrator", lifespan=lifespan)
 
 
 # ------------------------------------------------------------------ security
@@ -123,6 +124,10 @@ async def state() -> dict:
         "orders": db.list_orders(),
         "emails": db.list_emails(),
         "threads": db.list_threads(),
+        "staff": db.list_staff(),
+        "calendar_events": db.list_calendar_events(),
+        "tech_schedules": db.list_tech_schedules(),
+        "tech_demo": demo_slots(),
         "config": {
             "jev_live": bool(os.environ.get("TYPESAFE_API_KEY")),
             "openai_live": bool(os.environ.get("OPENAI_API_KEY")),

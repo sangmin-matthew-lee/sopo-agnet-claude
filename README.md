@@ -1,32 +1,32 @@
-# sopo-agnet-claude
+# SOPO Agent
 
-Agent for Sales Operation(SOP) Dept. Built using Claude Code
+회사의 영업운영(Sales Operation - SOP)팀을 위한 이메일 처리 에이전트
 
-SOP Return Orchestrator: FastAPI + SQLite + TypeSafe Jev (System 1 gatekeeper) + OpenAI Agents SDK
-(System 2 Return Agent), with a 3-column live sandbox UI. Order IDs, part numbers and shipping labels
-are masked into tokens (`<ORDER_TOKEN_1>`, `<PART_TOKEN_1>`, `<LABEL_TOKEN_1>`) locally and are never
-sent to any AI provider. See `CLAUDE.md` for the full spec.
+주요 기술 스택: FastAPI + SQLite + Jev + OpenAI Agents SDK
 
-## Prerequisites
+<details>
+<summary><b>1. 기술 정보: 준비물 · 로컬 실행 · 샌드박스 사용법</b></summary>
 
-- [uv](https://docs.astral.sh/uv/). It installs Python 3.12 (pinned in `.python-version`) and all dependencies.
-- A TypeSafe AI key (Jev) and an OpenAI key.
+### 준비물
 
-## Run locally
+- [uv](https://docs.astral.sh/uv/): Python 3.12(`.python-version`에 고정)와 모든 의존성을 설치합니다.
+- TypeSafe AI 키(Jev)와 OpenAI 키.
 
-**1. Install dependencies**
+### 로컬 실행
+
+**1. 의존성 설치**
 
 ```bash
 uv sync
 ```
 
-**2. Create `.env`**
+**2. `.env` 만들기**
 
 ```bash
 cp .env.example .env
 ```
 
-Then fill it in:
+아래 값을 채웁니다.
 
 ```dotenv
 DEMO_ACCESS_CODE=pick-any-passcode
@@ -34,145 +34,236 @@ TYPESAFE_API_KEY=your-typesafe-key
 OPENAI_API_KEY=sk-...
 ```
 
-`DEMO_ACCESS_CODE` is required. Without it, every API request is rejected with `503`.
+`DEMO_ACCESS_CODE`는 필수입니다. 없으면 모든 API 요청이 `503`으로 거부됩니다.
 
-**3. Start the server, loading `.env`**
+**3. `.env`를 불러오며 서버 시작**
 
 ```bash
 uv run --env-file .env uvicorn main:app --reload --port 8080
 ```
 
-The app does not read
-`.env` by itself, so a plain `uv run uvicorn ...` starts without your keys.
+앱이 `.env`를 직접 읽지 않으므로, `--env-file .env` 없이 `uv run uvicorn ...`으로 실행하면 키 없이 뜹니다.
 
-**4. Open the sandbox**
+**4. 샌드박스(데모 페이지) 열기**
 
 ```
 http://localhost:8080/?code=pick-any-passcode
 ```
 
-`?code=` fills in the passcode box automatically (it's also remembered in the browser). The top bar shows
-**Jev: live** and **OpenAI: live** when both keys were loaded.
+`?code=`가 패스코드 칸을 자동으로 채웁니다(브라우저에 기억됨). 두 키가 모두 로드되면 상단 바에
+**Jev: live**, **OpenAI: live**가 표시됩니다. 키가 없거나 API 오류가 나면 자동 처리하지 않고 사람에게 이관합니다.
 
-## Using the sandbox
+### 샌드박스 사용법
 
-1. Click a scenario preset in the top bar. It fills in column ① with a sender, a new `thread_id` and an email.
-2. Click **Send to FastAPI**. Column ② streams each phase live as it runs: raw vs. masked text, the local
-   vault, Jev's scores, the routing decision, and the agent's tool calls. You can watch the agent write its
-   email token by token. Click **⏩ Skip** to stop the typing animation.
-3. Column ③ shows the resulting emails in `CUSTOMER_INBOX` / `SOP_EMPLOYEE_INBOX`, plus the `orders` and
-   `thread_vaults` tables.
+화면은 3단입니다.
 
-| Preset                            | Expected result                                                                                                                             |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 · Happy Path (Messy Regex)      | `RETURN_LABEL_ISSUED`: label `UPS-RMA-ORD-9988` emailed to the customer                                                                     |
-| 2 · Missing Order ID (Multi-Turn) | `AWAITING_CUSTOMER_INFO`. Then click **↩ Reply in Thread** on the customer email, add e.g. `It's ord 9988`, and send: `RETURN_LABEL_ISSUED` |
-| 3 · Spoofed Sender Attack         | `ESCALATED_TO_HUMAN`: security alert to SOP, generic "under review" reply, no label                                                         |
-| 4 · Angry Customer Escalation     | `ESCALATED_TO_HUMAN` straight from Jev; OpenAI is never called                                                                              |
-| 5 · Spam / Prompt Injection       | `BLOCKED_SPAM`; no emails, OpenAI is never called                                                                                           |
+| 단                   | 내용                                                                                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ① Customer Simulator | 보낸 사람, `thread_id`, `message_id`, 이메일 본문, **Send** 버튼                                                                                             |
+| ② Backend & AI X-Ray | 단계별 실시간 추적: 원문 vs 마스킹된 텍스트, 로컬 Vault, Jev 점수, 라우팅 결정, 에이전트 도구 호출, 이메일 작성 과정(**⏩ Skip**으로 타이핑 애니메이션 생략) |
+| ③ Live Inboxes & DB  | `CUSTOMER_INBOX` / `SOP_EMPLOYEE_INBOX` 카드, `orders`·`thread_vaults` 테이블. Tech 탭에서는 `ENGINEER_INBOX`, 엔지니어·AM 캘린더, `tech_schedules`          |
 
-Click **Reset DB** to restore the seed orders and clear threads, emails and agent history. Once a label is
-issued for `ORD-9988`, later requests reuse it, so reset between demos for a clean slate.
+1. 상단의 탭(**📦 Returns** / **🛠 Tech Support**)을 고르고 시나리오 프리셋을 누르면 ①이 채워집니다
+   (새 `thread_id` 생성).
+2. **Send**를 누르면 ②에서 처리 과정이 실시간으로 흐르고, 결과 이메일이 ③에 나타납니다.
+3. 고객 이메일 카드의 **↩ Reply in Thread**를 누르면 같은 `thread_id`로 답장할 수 있습니다(멀티턴).
+4. **Reset DB**는 시드 주문·캘린더를 복원하고 스레드·이메일·에이전트 기록을 지웁니다.
+   데모 사이에 누르면 깨끗한 상태에서 시작합니다.
 
-Seed orders:
+두 탭 모두 같은 엔드포인트로 보냅니다. 어떤 에이전트가 처리할지는 **Jev**가 결정하고, 탭은 프리셋과 ③의
+패널만 바꿉니다. 프리셋의 날짜·시간은 시드 캘린더에서 계산되므로, 데모를 며칠 켜 두었다면 **Reset DB**를
+누르세요.
 
-| Order      | Part      | Owner                     | Status           | Delivered                               |
-| ---------- | --------- | ------------------------- | ---------------- | --------------------------------------- |
-| `ORD-9988` | `AB-1234` | `john@acmecorp.com`       | DELIVERED, qty 2 | 10 days ago (eligible)                  |
-| `ORD-1111` | `CD-5678` | `john@acmecorp.com`       | DELIVERED, qty 1 | 45 days ago (outside the 30-day window) |
-| `ORD-7777` | `EF-9012` | `mary@betaindustries.com` | SHIPPED, qty 5   | not yet delivered (ineligible)          |
+**시드 데이터**
 
-## Environment variables
+| 주문       | 부품      | 소유자                    | 상태              | 배송                     |
+| ---------- | --------- | ------------------------- | ----------------- | ------------------------ |
+| `ORD-9988` | `AB-1234` | `john@acmecorp.com`       | DELIVERED, 수량 2 | 10일 전 (반품 가능)      |
+| `ORD-1111` | `CD-5678` | `john@acmecorp.com`       | DELIVERED, 수량 1 | 45일 전 (30일 기한 초과) |
+| `ORD-7777` | `EF-9012` | `mary@betaindustries.com` | SHIPPED, 수량 5   | 아직 미배송              |
 
-| Variable                    | Required             | Default       | Purpose                                               |
-| --------------------------- | -------------------- | ------------- | ----------------------------------------------------- |
-| `DEMO_ACCESS_CODE`          | yes                  | none          | Passcode checked against the `X-Demo-Passcode` header |
-| `TYPESAFE_API_KEY`          | for live routing     | none          | Jev gatekeeper                                        |
-| `OPENAI_API_KEY`            | for the Return Agent | none          | `gpt-4o-mini` Return Agent                            |
-| `SOP_DB_PATH`               | no                   | `sop_demo.db` | SQLite file (app tables + agent sessions)             |
-| `JEV_MODEL`                 | no                   | `jev-latest`  | Jev model ID                                          |
-| `RETURN_AGENT_MODEL`        | no                   | `gpt-4o-mini` | Return Agent model                                    |
-| `RATE_LIMIT_REQUESTS`       | no                   | `30`          | Requests allowed per IP per window                    |
-| `RATE_LIMIT_WINDOW_SECONDS` | no                   | `60`          | Rate-limit window                                     |
+- 담당 AM(account manager):
+  - John → `sarah.kim@axmattsupply.com`
+  - Mary → `david.park@axmattsupply.com`
+  - 보안 경고·이관은 공용 큐 `sop-team@axmattsupply.com`으로 갑니다.
+- 엔지니어:
+  - `alex.chen@`(AB-1234 1순위)
+  - `priya.patel@`(AB-1234 2순위, CD-5678)
+  - `marco.rossi@`(EF-9012)
 
-**Fail-closed behavior:** if `TYPESAFE_API_KEY` or `OPENAI_API_KEY` is missing, or either API errors, no
-message is auto-processed. It's escalated to the SOP human inbox instead, and the top bar shows
-"no key → fail-closed".
+</details>
 
-## API
+<details>
+<summary><b>2. 누구를 위한 에이전트이고, 어떤 업무를 대신하는지</b></summary>
 
-All `/api/*` endpoints require the `X-Demo-Passcode` header.
+### 누구를 위한 에이전트인가
 
-| Method | Path                         | Description                                                                                                                          |
-| ------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET`  | `/`                          | Sandbox UI                                                                                                                           |
-| `GET`  | `/healthz`                   | Health check (no passcode)                                                                                                           |
-| `POST` | `/api/simulate-email`        | Body: `{sender_email, thread_id, message_id, body}`. Returns the final status and a step-by-step trace                               |
-| `POST` | `/api/simulate-email/stream` | Same body and pipeline, streamed live as Server-Sent Events (`phase_start`, `step`, `agent_log`, `agent_delta`, then `done`/`error`) |
-| `POST` | `/api/reset-db`              | Drop and reseed all tables                                                                                                           |
-| `GET`  | `/api/state`                 | Orders, emails, thread vaults, and which API keys are loaded                                                                         |
+회사의 영업운영(SOP)팀 내 고객사를 맡고 있는 **어카운트 매니저(AM)** 를 위한 에이전트입니다. 이들은 매일 고객사 구매·엔지니어링 담당자에게서 다음과 같은 이메일을 받아 하나하나 분류하고 처리합니다.
 
-Example:
+- 반품 요청
+- 기술 지원 요청
+- 항의
+- 스팸이 섞인 이메일
 
-```bash
-curl -X POST localhost:8080/api/simulate-email \
-  -H "X-Demo-Passcode: pick-any-passcode" -H "Content-Type: application/json" \
-  -d '{"sender_email":"john@acmecorp.com","thread_id":"t1","message_id":"m1","body":"Return ab - 1234 from ord/9988"}'
-```
+### 어떤 업무를 대신하는가
 
-Reusing a `message_id` returns `DUPLICATE_IGNORED`.
+| 업무                     | 사람이 하던 일                                                                                   | 에이전트가 대신하는 일                                                                                                                                                                                  |
+| ------------------------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **이메일 1차 분류**      | 메일을 읽고 스팸인지, 반품인지, 기술 문의인지, 화난 고객인지 판단                                | Jev가 스팸 확률·의도·분노 지수를 매기고, 규칙 기반 라우터가 차단 / 사람 이관 / 전문 에이전트로 보냄                                                                                                     |
+| **반품 처리**            | 주문 조회 → 본인 주문인지 확인 → 반품 기한·수량 확인 → 라벨 발급 → 고객 안내 메일                | Return Agent가 누락 정보 요청부터 3-way 본인 확인, 자격 심사, 라벨 발급(중복 발급 방지), 고객·AM 메일 발송까지 처리                                                                                     |
+| **기술 지원 미팅 잡기**  | 부품 담당 엔지니어 찾기 → 엔지니어·AM·고객 일정 맞추기(메일 핑퐁) → 초대장 발송 → 일정 변경 대응 | Tech Support Agent가 구매 이력 확인, 부품 담당 엔지니어 선택, 엔지니어·AM 캘린더 교집합 계산, 고객이 고른 시간으로 예약, 초대장 1통씩 발송, 일정 변경까지 처리. **엔지니어에게는 시간을 묻지 않습니다** |
+| **어려운 케이스 넘기기** | 화난 고객, 환불, 사기 의심 메일을 직접 판단                                                      | 사람이 판단해야 하는 건은 요약과 함께 SOP/AM 인박스로 넘기고, 고객에게는 접수 안내 메일 발송                                                                                                            |
 
-## Test
+### **핵심 원칙: 회사 내부 데이터 및 고객 데이터는 절대 외부 AI에 보내지 않습니다.**
 
-```bash
-uv run pytest
-```
+- 주문번호, 부품번호, 반품 라벨, 미팅 링크,직원 이름·이메일은 회사 내부 서버에서 토큰(`<ORDER_TOKEN_1>`, `<PART_TOKEN_1>`, `<LABEL_TOKEN_1>`, `<LINK_TOKEN_1>`)으로 바뀐 뒤에만 Jev·OpenAI로 전달되고, 실제 값은 서버 내 Python 도구 안에서만 복원됩니다. OpenAI 호출 직전과 도구 결과마다 가드가 다시 검사하고, 원본 값이 보이면 즉시 중단하고 사람에게 이관합니다.
 
-The 107 tests run fully offline and need no API keys. Jev is stubbed with `httpx.MockTransport`/monkeypatch,
-and the Return Agent runs through the real `Runner` + `SQLiteSession` with a scripted fake model
-(`tests/fake_model.py`).
+</details>
 
-To exercise the live APIs, start the server as above and run the 5 presets in the UI (or with `curl`).
+<details>
+<summary><b>3. 진행 상황: 지금 되는 것 / 아직 안 되는 것</b></summary>
 
-## Docker
+### ✅ 지금 되는 것
 
-```bash
-docker build -t sop-orchestrator .
-docker run --rm -p 8080:8080 --env-file .env sop-orchestrator
-```
+- **공통 파이프라인**
+  - 패스코드·IP별 요청 제한, `message_id` 중복 차단, 스레드별 Vault(멀티턴 대화 유지)
+  - 지저분한 입력 정규화: `ord/9988`, `ab - 1234` → `ORD-9988`, `AB-1234`
+  - Jev 분류 + 규칙 기반 라우팅 : 스팸은 OpenAI 비용 $0으로 차단하고, 분노·환불·저신뢰는 사람에게 이관
+  - 키 누락이나 API 오류 시 fail-closed(사람 이관)
+  - Jev & OpenAI 입력과 도구 결과에 대한 원본 데이터 가드
+- **Return Agent**
+  - 주문번호·부품번호 누락 시 요청 후 같은 스레드에서 이어서 처리
+  - 3-way 본인 확인(주문 + 부품 + 보낸 사람). 불일치하면 스레드를 잠그고 `[SECURITY]` 로 AM에게 이관
+  - 반품 자격 심사: 배송 완료 여부, 30일 기한, 구매 수량
+  - 라벨 발급(`UPS-RMA-{주문번호}`). 이미 발급된 라벨은 재사용
+  - 고객에겐 반품 메일과 AM에겐 요약 메일 발송
+- **Tech Support Agent**
+  - 부품 구매 이력 확인, 우선순위에 따른 엔지니어 선택(1순위가 바쁘면 2순위)
+  - 엔지니어·AM 캘린더 교집합으로 빈 시간 계산
+  - 고객이 고른 시간만 예약(에이전트가 임의로 예약하지 않음)
+  - 이메일은 엔지니어·AM에게 각 1통, 스레드당 미팅 1개, 고객·부품당 예정 미팅 1개
+  - 일정 변경: 같은 스레드 답장이나 새 이메일 모두 가능. 같은 링크 유지, 변경 미팅에 대한 메일 1통
+  - 일정 조율 메일 3회 초과 시 사람에게 이관
+- **데모**
+  - 3단 샌드박스(실시간 X-Ray 스트리밍, Returns/Tech 탭, 프리셋 11개)
 
-## Deploy (Cloud Run)
+### ⏳ 아직 안 되는 것
 
-```bash
-gcloud run deploy sop-orchestrator --source . --port 8080 --max-instances 1 \
-  --set-env-vars DEMO_ACCESS_CODE=... \
-  --set-secrets TYPESAFE_API_KEY=typesafe-api-key:latest,OPENAI_API_KEY=openai-api-key:latest
-```
+**반품(Return)**
 
-This stores the API keys in Secret Manager (create the `typesafe-api-key` and `openai-api-key` secrets
-first) rather than in plain environment variables. The container keeps SQLite at `/tmp/sop_demo.db`, which
-is ephemeral and per instance, and the rate limiter is in-memory. `--max-instances 1` keeps the demo state
-consistent.
+- **환불(refund) 자동 처리 없음:** `refund` 의도는 전담 에이전트가 없어 항상 사람에게 이관됩니다 (금액 계산, 크레딧 발행, 회계 연동 없음).
+- **이메일 한 통 = 주문 1건 · 부품 1개:** 여러 주문이나 여러 부품을 한 메일로 반품하는 경우(부분 반품 묶음)는 처리하지 않습니다.
+- **반품 사유·상태 관리 없음:** 사유(파손/오배송 등)를 구조화해 저장하지 않습니다. 라벨 발급 이후 단계(입고 확인,검수, 재고 반영, 반품 완료 처리)도 없습니다.
+- **잘못된 주문번호 반복 시 제한 없음:** 주문번호를 계속 잘못 보내면 매번 다시 요청합니다(Tech 쪽 같은 3회 제한 없음).
 
-## Layout
+**기술 지원 쪽**
 
-| File                | Role                                                                                        |
-| ------------------- | ------------------------------------------------------------------------------------------- |
-| `db.py`             | Schema, seed data, reset, query helpers                                                     |
-| `masker.py`         | Phase 1: preprocessing + "Catch Messy, Store Clean" token vault                             |
-| `jev_router.py`     | Phase 2: Jev client + deterministic Path A/B/C router (incl. multi-turn continuation)       |
-| `agent.py`          | Phase 3/4: Return Agent, anti-spoofing, eligibility, label idempotency, de-masking dispatch |
-| `pipeline.py`       | Orchestrates the 4 phases and builds the X-Ray trace                                        |
-| `main.py`           | FastAPI endpoints, passcode check, rate limiting                                            |
-| `static/index.html` | 3-column sandbox UI                                                                         |
-| `tests/`            | Offline test suite                                                                          |
+- "취소만" 해달라는 요청은 전용 처리 없이 일정 변경 흐름으로 다뤄집니다.
 
-## Troubleshooting
+**공통 / 운영**
 
-| Symptom                                                    | Cause                                                                                 |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `503: DEMO_ACCESS_CODE is not set`                         | `.env` has no `DEMO_ACCESS_CODE`, or the server wasn't started with `--env-file .env` |
-| `401: Invalid or missing X-Demo-Passcode`                  | The passcode box doesn't match `DEMO_ACCESS_CODE`                                     |
-| `429: Rate limit exceeded`                                 | More than 30 requests in 60 s from one IP. Wait, or raise `RATE_LIMIT_REQUESTS`       |
-| Every scenario ends in `ESCALATED_TO_HUMAN`                | Keys weren't loaded (check the top-bar badges). Restart with `--env-file .env`        |
-| Happy path says the label "already existed and was reused" | A label was issued earlier. Click **Reset DB**                                        |
+- 실제 메일 수신·발송 없음: 인박스는 DB 테이블(`simulated_emails`)입니다.
+
+</details>
+
+<details>
+<summary><b>4. 플로우차트</b></summary>
+
+![SOPO 에이전트 플로우차트](docs/flowchart.png)
+
+- **Phase 1 (로컬):** 중복 확인 → 전처리 → PII 마스킹. 원본 값은 로컬 Vault에만 저장.
+- **Phase 2 (Jev):** 마스킹된 텍스트만 보내 분류하고, Python 규칙이 A(차단) / B(사람) / C1(반품) / C2(기술 지원)로 보냅니다.
+- **Phase 3–4 (OpenAI 에이전트 + 로컬 도구):** 에이전트는 토큰만 보고 도구를 호출합니다. 본인 확인, 자격 심사, 캘린더 확인, 예약, 실제 값 복원·발송은 모두 로컬 Python에서 일어납니다.
+
+원본: [`docs/flowchart.dot`](docs/flowchart.dot)
+(`dot -Tpng -Gdpi=140 docs/flowchart.dot -o docs/flowchart.png`로 다시 생성)
+
+</details>
+
+<details>
+<summary><b>5. 구현해 놓은 케이스 (반품 · 기술 지원)</b></summary>
+
+데모 페이지에서는 프리셋 번호로 몇몇 케이스들을 재현했습니다. 그 외에는 이메일 칸에 직접 입력하거나 프리셋을 고친 뒤 보냅니다.
+
+### 📦 반품 (Return Agent)
+
+| #   | 상황                                              | 결과                                                                    | 데모 방법                                                                                         |
+| --- | ------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| R1  | 정상 반품, 지저분한 입력(`ab - 1234`, `ord/9988`) | 반품 라벨 `UPS-RMA-ORD-9988` 발송                                       | Returns 프리셋 1에서 Send 누르기                                                                  |
+| R2  | 이미 라벨이 발급된 주문을 다시 요청               | 같은 라벨 재사용(중복 발급 없음)                                        | 프리셋 1에서 Send 한번 더 누르기                                                                  |
+| R3  | 주문번호 누락 → 같은 스레드로 답장                | 손님에게 다시 이메일 보내서 주문 번호 물어본 후 확인되면 반품 라벨 발송 | 프리셋 2 에서 Send 누르기 → ↩ Reply in Thread: `It's ord 9988`                                    |
+| R4  | 남의 주문으로 반품 요청(스푸핑)                   | `[SECURITY]` 경고 바로 SOP AM에게 알람, 라벨 생성 없음, 스레드 잠금     | 프리셋 3                                                                                          |
+| R5  | 반품 기한(30일) 초과                              | 반품 불가 사유 안내 + SOP 통지                                          | 직접 입력: john@ → `I'd like to return CD-5678 from ORD-1111, it stopped working.`                |
+| R6  | 아직 배송되지 않은 주문                           | 반품 불가 통지                                                          | 직접 입력: mary@betaindustries.com → `Please send a return label for EF-9012, order ORD-7777.`    |
+| R7  | 구매 수량보다 많이 반품                           | 반품 불가 통지                                                          | Reset DB 후 직접 입력: john@ → `I need to return 5 units of AB-1234 from ORD-9988.` (구매 수량 2) |
+| R8  | 존재하지 않는 주문번호                            | 다시 확인 요청                                                          | 직접 입력: john@ → `Return AB-1234 from ORD-5555 please.`                                         |
+| R9  | 매우 화난 고객                                    | `ESCALATED_TO_HUMAN`, OpenAI 호출 없음                                  | 프리셋 4                                                                                          |
+| R10 | 환불 요청                                         | 바로 SOP AM에게 알람 (환불 담당 에이전트 없음)                          | 직접 입력: john@ → `Please refund the $480 we paid for ORD-9988 to our card.`                     |
+| R11 | 스팸 / 프롬프트 인젝션                            | Jev에서 차단, OpenAI 비용 $0                                            | 프리셋 5                                                                                          |
+| R12 | 같은 `message_id` 재전송                          | 아무 처리 없음                                                          | Send 전에 `message_id`를 복사 → 보낸 뒤 그 값을 다시 붙여넣고 Send                                |
+
+### 🛠 기술 지원 (Tech Support Agent)
+
+| #   | 상황                                                 | 결과                                                                    | 데모 방법                                                                                           |
+| --- | ---------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| T1  | 요청한 시간이 엔지니어·AM 모두 비어 있음             | 고객에게 시간 + 링크, 엔지니어·AM에게 초대 이메일 각 1통                | Tech 프리셋 1                                                                                       |
+| T2  | 같은 스레드에서 일정 변경("그 시간 안 돼요, 대신 …") | 미팅 이동, 같은 링크, 고객, AM, 엔지니어 변경 일정 이메일 각각 1통      | 프리셋 1 → ↩ Reply in Thread(힌트 문구 사용)                                                        |
+| T3  | **새 이메일**로 일정 변경 요청                       | 기존 미팅을 찾아 이동(중복 예약 없음)                                   | 프리셋 1 Send 이후 프리셋 6 가서 Send                                                               |
+| T4  | 시간 언급 없음 → 제안 → 고객이 선택                  | 3개 옵션 제안, **에이전트가 임의로 예약하지 않음**) → 선택 후 미팅 확정 | 프리셋 2 → ↩ Reply: `Option 2 works for us.`                                                        |
+| T5  | 요청한 시간에 엔지니어가 바쁨                        | 대안 3개 제안, 엔지니어에게 연락 안 함                                  | 프리셋 3 → 원하면 ↩ Reply로 하나 선택                                                               |
+| T6  | 부품번호 누락                                        | 부품번호·희망 시간 요청 → 답장 후 예약                                  | 프리셋 4 → ↩ Reply(힌트 문구 사용)                                                                  |
+| T7  | 구매하지 않은 부품으로 미팅 요청                     | SOP AM에게 `[SECURITY]` 경고, 예약·엔지니어 연락 없음                   | 프리셋 5                                                                                            |
+| T8  | 존재하지 않는 부품번호                               | 부품번호 재확인 요청                                                    | 직접 입력: john@ → `Our ZZ-0000 unit is failing, can an engineer help?`                             |
+| T9  | 제안 시간이 계속 안 맞음(3회 초과)                   | 4번째 조율 메일 대신 AM에게 이관 + 고객 안내                            | 프리셋 2 → ↩ Reply `None of those work, other times?`를 3번(세 번째 답장에서 이관)                  |
+| T10 | 이미 예약된 고객·부품으로 새 미팅 요청               | 새로 예약하지 않고 기존 미팅 안내(고객·부품당 1개)                      | 프리셋 1 이후 프리셋 1 또는 2를 다시 보내기                                                         |
+| T11 | 1순위 엔지니어가 바쁘면 2순위 배정                   | AB-1234: Alex가 바쁜 시간이면 Priya에게 초대                            | 프리셋 1의 시간을 **다음 영업일 오전 10:30**으로 바꿔 보내기(Alex는 바쁘고 Priya·Sarah는 비어 있음) |
+| T12 | 화난 고객 / 스팸 (기술 문의라도)                     | 사람 이관 / 차단 (반품과 같은 안전 규칙)                                | 직접 입력: 대문자로 항의하는 기술 문의                                                              |
+
+</details>
+
+<details>
+<summary><b>6. 모든 케이스를 테스트하는 추천 데모 순서</b></summary>
+
+상단의 **Reset DB**로 시작합니다. 각 단계의 "기대 결과"가 ③ 인박스와 상태 배지에 보이면 성공입니다.
+
+### A. 📦 Returns 탭
+
+| 순서 | 할 일                                                                                 | 기대 결과                                                    | 케이스 |
+| ---- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------ |
+| 1    | **Reset DB** → 프리셋 **5 · Spam**                                                    | `BLOCKED_SPAM`, 메일 0통, ②에 "Zero OpenAI tokens"           | R11    |
+| 2    | 프리셋 **4 · Angry Customer**                                                         | `ESCALATED_TO_HUMAN`, SOP 알림 + 고객 안내, OpenAI 호출 없음 | R9     |
+| 3    | 직접 입력(R10 환불 문구)                                                              | `ESCALATED_TO_HUMAN`                                         | R10    |
+| 4    | 프리셋 **3 · Spoofed Sender**                                                         | `ESCALATED_TO_HUMAN`, `[SECURITY]`, 라벨 없음                | R4     |
+| 5    | 직접 입력(R7 수량 5개)                                                                | `RETURN_DENIED` (구매 수량 2)                                | R7     |
+| 6    | 직접 입력(R5 `ORD-1111`)                                                              | `RETURN_DENIED` (45일 전 배송)                               | R5     |
+| 7    | 직접 입력(R6 Mary `ORD-7777`)                                                         | `RETURN_DENIED` (미배송)                                     | R6     |
+| 8    | 직접 입력(R8 `ORD-5555`)                                                              | 주문번호 재확인 요청                                         | R8     |
+| 9    | 프리셋 **2 · Missing Order ID** → 고객 메일의 **↩ Reply in Thread** → `It's ord 9988` | `AWAITING_CUSTOMER_INFO` → `RETURN_LABEL_ISSUED`             | R3     |
+| 10   | 프리셋 **1 · Happy Path**                                                             | 같은 라벨 재사용 메시지(9번에서 이미 발급)                   | R2     |
+| 11   | **Reset DB** → 프리셋 **1 · Happy Path**                                              | `RETURN_LABEL_ISSUED`, 새 라벨 발급, ②에서 마스킹 확인       | R1     |
+| 12   | 프리셋 1을 다시 누르고 `message_id`를 11번에서 쓴 값으로 바꿔 Send                    | `DUPLICATE_IGNORED`                                          | R12    |
+
+> 5번(수량 초과)은 라벨이 발급되기 전에 해야 합니다. 그래서 9–10번보다 앞에 둡니다.
+
+### B. 🛠 Tech Support 탭
+
+| 순서 | 할 일                                                                                             | 기대 결과                                                                           | 케이스 |
+| ---- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------ |
+| 13   | **Reset DB** → 탭 전환 → 프리셋 **5 · Not the Owner**                                             | `ESCALATED_TO_HUMAN`, `[SECURITY]`, `ENGINEER_INBOX` 비어 있음                      | T7     |
+| 14   | 직접 입력(T8 `ZZ-0000`)                                                                           | 부품번호 재확인 요청                                                                | T8     |
+| 15   | 프리셋 **3 · Engineer Busy** (Mary)                                                               | 대안 3개 제안, Marco에게 메일 없음                                                  | T5     |
+| 16   | 15번 고객 메일에 **↩ Reply** `Option 1 works.`                                                    | `MEETING_CONFIRMED`, Marco·David에게 초대장 각 1통                                  | T5     |
+| 17   | 프리셋 **2 · No Times Given**                                                                     | `AWAITING_CUSTOMER_SCHEDULE`, 3개 제안, **예약 안 됨**                              | T4     |
+| 18   | 17번 스레드에 **↩ Reply** `None of those work, other times?`를 3번                                | 첫째·둘째 답장에는 새 제안, 셋째 답장에서 AM 이관 + 고객 안내(`ESCALATED_TO_HUMAN`) | T9     |
+| 19   | **Reset DB** → 프리셋 **4 · Missing Part Number** → ↩ Reply(힌트 문구: 부품 + 시간)               | 부품 요청 → `MEETING_CONFIRMED`                                                     | T6     |
+| 20   | 프리셋 **2 · No Times Given** (같은 John·AB-1234)                                                 | 새로 잡지 않고 19번 미팅 안내                                                       | T10    |
+| 21   | **Reset DB** → 프리셋 **2** → ↩ Reply `Option 2 works for us.`                                    | 제안 → 선택한 시간으로 `MEETING_CONFIRMED`                                          | T4     |
+| 22   | 21번 확인 메일에 **↩ Reply** `Sorry, that time no longer works. Could we do <다른 시간> instead?` | 미팅 이동, 같은 링크, `[Updated invite]` 각 1통, ③ 캘린더 갱신                      | T2     |
+| 23   | 프리셋 **6 · Reschedule (New Email)**                                                             | 새 스레드가 기존 미팅을 찾아 이동, 중복 예약 없음                                   | T3     |
+| 24   | **Reset DB** → 프리셋 **1 · Happy Path**                                                          | `MEETING_CONFIRMED`, 초대장 각 1통                                                  | T1     |
+| 25   | (선택) Reset DB → 프리셋 1의 시간을 **다음 영업일 오전 10:30**으로 바꿔 Send                      | Priya에게 초대(Alex는 그 시간 고객 방문)                                            | T11    |
+| 26   | (선택) 화가 난 기술 문의를 직접 입력                                                              | `ESCALATED_TO_HUMAN`                                                                | T12    |
+
+> 고객·부품당 예정 미팅은 1개만 허용됩니다. 그래서 같은 John·AB-1234 미팅을 새로 잡아야 하는 단계 앞에는 > **Reset DB**가 있습니다.
+
+</details>

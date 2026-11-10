@@ -15,7 +15,8 @@ from agents import Agent, ModelSettings, RunConfig, RunContextWrapper, Runner, S
 from agents.models.interface import Model
 
 import db
-from masker import TOKEN_RE, add_to_vault, tokens_of, unmask_text
+from jev_router import PIILeakError
+from masker import TOKEN_RE, add_to_vault, contains_raw_pii, tokens_of, unmask_text
 
 RETURN_WINDOW_DAYS = 30
 RETURN_AGENT_MODEL = os.environ.get("RETURN_AGENT_MODEL", "gpt-4o-mini")
@@ -74,6 +75,49 @@ def _days_since(iso: str) -> float:
 
 def _send(ctx: SOPSharedContext, inbox: str, recipient: str, subject: str, body: str) -> int:
     return db.insert_email(ctx.thread_id, inbox, recipient, subject, body, ctx.db_path)
+
+
+def _dispatch(ctx: SOPSharedContext, customer_subject: str, customer_body: str, sop_summary: str) -> list[int]:
+    """Token de-masking happens here, locally, right before the emails are written."""
+    subject = unmask_text(customer_subject, ctx.vault)
+    sent = [_send(ctx, CUSTOMER_INBOX, ctx.customer_email, subject, unmask_text(customer_body, ctx.vault))]
+    if sop_summary.strip():
+        sent.append(_send(ctx, SOP_EMPLOYEE_INBOX, ctx.sop_owner_email,
+                          f"[SOP] {subject}", unmask_text(sop_summary, ctx.vault)))
+    return sent
+
+
+# ------------------------------------------------- privacy guard before OpenAI
+# Last line of defense, mirroring the Jev guard in jev_router.classify(): if real data is about to be
+# sent to OpenAI, raise instead. The pipeline treats any agent exception as fail-closed (human escalation).
+
+def guard_agent_input(ctx: SOPSharedContext, text: str) -> str:
+    """The masked customer email + framing. Must not contain raw order/part/label/link values."""
+    if contains_raw_pii(text):
+        ctx.log("guard", rule="no_raw_data_to_openai", where="agent_input",
+                blocked=["order/part/label/link value"], local_only=True)
+        raise PIILeakError("Refusing to send unmasked data to OpenAI (agent input).")
+    return text
+
+
+def guard_tool_result(ctx: SOPSharedContext, tool: str, text: str) -> str:
+    """Tool results are written by our own code, so they must not carry any local identity either."""
+    low = text.lower()
+    blocked = []
+    if contains_raw_pii(text):
+        blocked.append("order/part/label/link value")
+    if ctx.customer_email and ctx.customer_email.lower() in low:
+        blocked.append("customer email")
+    for person in db.list_staff(ctx.db_path):
+        if person["email"].lower() in low or person["name"].lower() in low:
+            blocked.append("staff identity")
+            break
+    if f"@{db.COMPANY_DOMAIN}" in low:
+        blocked.append("company email address")
+    if blocked:
+        ctx.log("guard", rule="no_raw_data_to_openai", where=f"tool_result:{tool}", blocked=blocked, local_only=True)
+        raise PIILeakError(f"Refusing to send unmasked data to OpenAI (result of {tool}).")
+    return text
 
 
 # ---------------------------------------------------------- tool implementations
@@ -202,13 +246,7 @@ def send_return_emails_impl(
         ctx.log("label_appended", label_token=ctx.label_token,
                 note="LLM omitted the label token; appended locally")
 
-    # Token de-masking happens here, locally, right before dispatch.
-    subject = unmask_text(customer_subject, ctx.vault)
-    body = unmask_text(customer_body, ctx.vault)
-    sent = [_send(ctx, CUSTOMER_INBOX, ctx.customer_email, subject, body)]
-    if sop_summary.strip():
-        sent.append(_send(ctx, SOP_EMPLOYEE_INBOX, ctx.sop_owner_email,
-                          f"[SOP] {subject}", unmask_text(sop_summary, ctx.vault)))
+    sent = _dispatch(ctx, customer_subject, customer_body, sop_summary)
 
     if request_missing_info:
         ctx.thread_status = AWAITING_CUSTOMER_INFO
@@ -222,7 +260,7 @@ def send_return_emails_impl(
 
 # ------------------------------------------------------------------ SDK tools
 
-@function_tool
+@function_tool(failure_error_function=None)  # tool errors abort the run -> human escalation
 def verify_order_and_create_label(
     ctx: RunContextWrapper[SOPSharedContext], order_token: str, part_token: str, quantity: int
 ) -> str:
@@ -233,10 +271,11 @@ def verify_order_and_create_label(
         part_token: The part token exactly as it appears, e.g. <PART_TOKEN_1>.
         quantity: Number of units to return. Use 1 if the customer did not say.
     """
-    return verify_order_and_create_label_impl(ctx.context, order_token, part_token, quantity)
+    return guard_tool_result(ctx.context, "verify_order_and_create_label",
+                             verify_order_and_create_label_impl(ctx.context, order_token, part_token, quantity))
 
 
-@function_tool
+@function_tool(failure_error_function=None)
 def send_return_emails(
     ctx: RunContextWrapper[SOPSharedContext],
     customer_subject: str,
@@ -252,7 +291,8 @@ def send_return_emails(
         sop_summary: Short internal summary for the Sales Operations team. Use an empty string to skip.
         request_missing_info: True if this email asks the customer for a missing order or part number.
     """
-    return send_return_emails_impl(ctx.context, customer_subject, customer_body, sop_summary, request_missing_info)
+    return guard_tool_result(ctx.context, "send_return_emails", send_return_emails_impl(
+        ctx.context, customer_subject, customer_body, sop_summary, request_missing_info))
 
 
 RETURN_AGENT_INSTRUCTIONS = """\
@@ -304,14 +344,25 @@ async def run_return_agent(
     model: str | Model | None = None,
     session_db_path: str | None = None,
 ) -> dict[str, Any]:
-    agent = build_return_agent(model)
+    return await run_agent(build_return_agent(model), ctx, build_agent_input(masked_text, ctx.vault),
+                           session_db_path=session_db_path)
+
+
+async def run_agent(
+    agent: Agent[Any],
+    ctx: SOPSharedContext,
+    agent_input: str,
+    session_db_path: str | None = None,
+    max_turns: int = 8,
+) -> dict[str, Any]:
+    """Run any specialist with the thread's SQLiteSession, streaming model output to ctx.emit if set."""
+    guard_agent_input(ctx, agent_input)
     session = SQLiteSession(session_id=ctx.thread_id, db_path=session_db_path or ctx.db_path or db.DB_PATH)
-    agent_input = build_agent_input(masked_text, ctx.vault)
     ctx.log("agent_input", text=agent_input)
     kwargs: dict[str, Any] = dict(
         context=ctx,
         session=session,
-        max_turns=8,
+        max_turns=max_turns,
         # Traces would include tool payloads; keep everything local.
         run_config=RunConfig(tracing_disabled=True),
     )

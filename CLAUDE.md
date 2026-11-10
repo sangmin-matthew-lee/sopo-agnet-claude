@@ -54,16 +54,27 @@ Evaluate the **masked email text** in a single parallel Jev API call:
    - Replace all `<TOKENS>` with real values from `ctx.context.vault`.
    - Insert final unmasked emails into `simulated_emails` table (`CUSTOMER_INBOX` and `SOP_EMPLOYEE_INBOX`).
 
+### Phase 3B / 4B: Tech Support Agent (`tech_agent.py`)
+
+- **Path C (Tech):** If `intent == "tech_support"` and `confidence >= 0.60` (and Paths A/B don't apply), invoke the `Tech Support Agent` (`gpt-4o-mini`, same `SQLiteSession(thread_id)`). Replies on a thread in `AWAITING_CUSTOMER_SCHEDULE` continue to this agent (Jev gets a static `TECH_SCHEDULING_CONTEXT`).
+- **Calendars are the source of truth.** The agent reads free/busy for an engineer who knows the part (`engineer_parts`, by priority) and the client's account manager (`orders.sop_owner_email`). It never asks the engineer about times. The engineer and the AM each get **exactly one** invite, at booking time.
+- Tools: `check_meeting_availability(part_token, requested_starts, reschedule)` (ownership check: sender must have an order of the part, else lock + `[SECURITY]` escalation; returns `AVAILABLE` or up to 3 shared open slots), `book_tech_meeting(part_token, start)` (idempotent per thread; writes `MEETING` events, mints `<LINK_TOKEN_N>`, sends the two invites), `send_tech_support_emails(...)` (unmasks tokens; `awaiting_customer=true` sets `AWAITING_CUSTOMER_SCHEDULE` and counts a round).
+- **Customer chooses:** `book_tech_meeting` only accepts a slot that the customer requested and that `check_meeting_availability` returned `AVAILABLE` in the same run; offered slots can't be booked by the agent.
+- **Rescheduling:** replies on `MEETING_CONFIRMED` threads also continue to the agent. `check_meeting_availability(..., reschedule=true)` ignores the meeting's own calendar entries and never re-offers its current time; offers set `tech_schedules.status = RESCHEDULING`. Booking then moves the meeting (same link): one `[Updated invite]` to the engineer and AM, or `[Cancelled]` + a new invite if another engineer must take over. A new email thread adopts the customer's upcoming meeting (by part, or their only one) instead of booking a duplicate. Past meetings don't count as booked.
+- **Round limit:** after 3 scheduling emails, a 4th is replaced by a human escalation to the AM plus a holding reply.
+- Engineer/AM names and emails, part numbers and meeting links never reach the LLM. Dates/times are not PII; slots are 30 min, business days 09:00–17:00 `BUSINESS_TZ`, from the next business day up to 10 business days out.
+
 ---
 
 ## 3. SQLite Database Schema (`sop_demo.db`)
 
-Create and seed these 4 tables on startup (and provide a `/api/reset-db` endpoint):
+Create and seed these tables on startup (and provide a `/api/reset-db` endpoint):
 
 1. `orders`: `order_id TEXT`, `part_number TEXT`, `customer_email TEXT NOT NULL`, `sop_owner_email TEXT NOT NULL`, `purchased_qty INTEGER NOT NULL`, `status TEXT NOT NULL`, `delivered_at TEXT NOT NULL`, `return_label TEXT`, `PRIMARY KEY (order_id, part_number)`
 2. `thread_vaults`: `thread_id TEXT PRIMARY KEY`, `customer_email TEXT NOT NULL`, `vault_json TEXT NOT NULL`, `thread_status TEXT NOT NULL`, `updated_at TEXT NOT NULL`
 3. `processed_messages`: `message_id TEXT PRIMARY KEY`, `thread_id TEXT NOT NULL`, `received_at TEXT NOT NULL`
-4. `simulated_emails`: `id INTEGER PRIMARY KEY AUTOINCREMENT`, `thread_id TEXT NOT NULL`, `inbox_type TEXT NOT NULL`, `recipient_email TEXT NOT NULL`, `subject TEXT NOT NULL`, `body TEXT NOT NULL`, `created_at TEXT NOT NULL`
+4. `simulated_emails`: `id INTEGER PRIMARY KEY AUTOINCREMENT`, `thread_id TEXT NOT NULL`, `inbox_type TEXT NOT NULL`, `recipient_email TEXT NOT NULL`, `subject TEXT NOT NULL`, `body TEXT NOT NULL`, `created_at TEXT NOT NULL` (`inbox_type` ∈ `CUSTOMER_INBOX`, `SOP_EMPLOYEE_INBOX`, `ENGINEER_INBOX`)
+5. Tech support: `staff(email, name, role)`, `engineer_parts(engineer_email, part_number, priority)`, `calendar_events(id, owner_email, start_at, end_at, title, kind BUSY|MEETING, thread_id)` (UTC ISO), `tech_schedules(thread_id PK, customer_email, part_number, am_email, engineer_email, rounds, offered_slots_json, meeting_start, meeting_link, issue_text, status, updated_at)`
 
 ---
 
@@ -77,4 +88,5 @@ Create and seed these 4 tables on startup (and provide a `/api/reset-db` endpoin
   5. _Spam / Prompt Injection_: Crypto spam blocked by Jev at Phase 2 with $0 OpenAI cost.
 - **Column 1 (Customer Simulator):** Sender email, `thread_id`, `message_id`, email body textarea, and "Send to FastAPI" button.
 - **Column 2 (Backend & AI X-Ray):** Live step-by-step trace showing Raw vs. Masked text, Local Vault JSON, Jev probabilities/confidence gauges, and OpenAI Agent tool calls.
+- **Tabs:** `📦 Returns` and `🛠 Tech Support`. Same endpoint; the tab switches the presets (Tech: Happy Path, No Times Given, Engineer Busy, Missing Part Number, Not the Owner, Reschedule) and the column 3 panels.
 - **Column 3 (Live Inboxes & DB Inspector):** Rendered cards for `CUSTOMER_INBOX` (with a "Reply in Thread" button that keeps the same `thread_id`) and `SOP_EMPLOYEE_INBOX`, plus a live table view of the `orders` SQLite table.

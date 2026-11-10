@@ -65,3 +65,31 @@ def test_thread_vault_roundtrip(db_path):
 def test_three_way_order_match(db_path):
     assert db.find_order_for_customer("ORD-9988", "AB-1234", "JOHN@acmecorp.com", db_path)
     assert db.find_order_for_customer("ORD-9988", "AB-1234", "hacker@gmail.com", db_path) is None
+
+
+def test_orders_have_named_account_managers(db_path):
+    owners = {o["customer_email"]: o["sop_owner_email"] for o in db.list_orders(db_path)}
+    assert owners == db.ACCOUNT_MANAGERS
+    assert all(p["email"].endswith("@axmattsupply.com") for p in db.list_staff(db_path))
+
+
+def test_migrate_upgrades_legacy_db_in_place(db_path):
+    old = "acmesupply.com"
+    with db.get_conn(db_path) as conn:
+        conn.execute(f"UPDATE orders SET sop_owner_email = 'sop-team@{old}'")
+        conn.execute(f"UPDATE staff SET email = replace(email, 'axmattsupply.com', '{old}')")
+        conn.execute(f"UPDATE calendar_events SET owner_email = replace(owner_email, 'axmattsupply.com', '{old}')")
+    db.save_thread("t1", "john@acmecorp.com", {"<LINK_TOKEN_1>": f"https://meet.{old}/TS-1"}, "DONE", db_path)
+    db.insert_email("t1", "SOP_EMPLOYEE_INBOX", f"sarah.kim@{old}", "s", f"join https://meet.{old}/TS-1", db_path)
+
+    db.init_db(db_path)  # what the server does on startup
+    db.init_db(db_path)  # idempotent
+
+    assert {o["customer_email"]: o["sop_owner_email"] for o in db.list_orders(db_path)} == db.ACCOUNT_MANAGERS
+    assert len(db.list_staff(db_path)) == len(db.seed_staff())
+    assert all(p["email"].endswith("@axmattsupply.com") for p in db.list_staff(db_path))
+    assert all(old not in e["owner_email"] for e in db.list_calendar_events(db_path))
+    assert db.load_thread("t1", db_path)["vault"]["<LINK_TOKEN_1>"] == "https://meet.axmattsupply.com/TS-1"
+    mail = db.list_emails(db_path)[0]
+    assert mail["recipient_email"] == "sarah.kim@axmattsupply.com" and old not in mail["body"]
+    assert db.busy_intervals(db.AM_JOHN, db_path)  # calendars still line up with the renamed staff

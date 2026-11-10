@@ -55,7 +55,7 @@ def test_block_takes_priority_over_escalation():
     dict(intent="human_needed"),
     dict(intent="return", conf=0.59),     # low confidence
     dict(intent="refund", conf=0.9),      # no automated handler
-    dict(intent="tech_support", conf=0.9),
+    dict(intent="tech_support", conf=0.59),
 ])
 def test_path_b_escalate(kw):
     d = route(result(**kw))
@@ -167,3 +167,26 @@ def test_request_includes_thread_context_only_when_given():
 async def test_thread_context_with_raw_pii_refused():
     with pytest.raises(PIILeakError):
         await classify("hi", api_key="k", thread_context="order ORD-9988")
+
+
+def test_tech_support_routes_to_tech_agent():
+    d = route(result(intent="tech_support", conf=0.9))
+    assert d.path == "C_TECH_AGENT" and d.thread_status is None
+
+
+def test_tech_support_still_escalates_when_furious_or_blocked_when_spam():
+    assert route(result(intent="tech_support", score=1.8)).path == "B_ESCALATE"
+    assert route(result(intent="tech_support", spam=0.9)).path == "A_BLOCK"
+
+
+@pytest.mark.parametrize("intent,conf", [("non_sop", 0.99), ("tech_support", 0.3)])
+def test_tech_scheduling_reply_continues(intent, conf):
+    d = route(result(intent=intent, conf=conf), awaiting_tech_schedule=True)
+    assert d.path == "C_TECH_AGENT" and "AWAITING_CUSTOMER_SCHEDULE" in d.reasons[0]
+
+
+def test_tech_scheduling_reply_still_guarded():
+    assert route(result(intent="non_sop", spam=0.9), awaiting_tech_schedule=True).path == "A_BLOCK"
+    assert route(result(intent="tech_support", score=1.9), awaiting_tech_schedule=True).path == "B_ESCALATE"
+    # A return reply on a tech thread is not silently treated as scheduling.
+    assert route(result(intent="return", conf=0.9), awaiting_tech_schedule=True).path == "C_RETURN_AGENT"

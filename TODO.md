@@ -25,3 +25,8 @@
   - Enforce `X-Demo-Passcode` header check and in-memory rate limiting.
   - Build the 3-Column HTML/Tailwind CSS Sandbox UI with the 5 One-Click Scenario Preset buttons and multi-turn "Reply in Thread" capability.
   - Create `Dockerfile` ready for GCP Cloud Run (`PORT=8080`).
+
+- [x] **Milestone 6: Tech Support Agent (`tech_agent.py`, `scheduling.py`)**
+  - Route Jev `tech_support` to a second OpenAI specialist that books a 30-min call with an engineer who knows the part and the client's account manager.
+  - Calendars (`calendar_events`) are the source of truth; the engineer and AM each get exactly one invite. Ownership check on part + sender; 3-round scheduling limit before human escalation; `<LINK_TOKEN_N>` masking for meeting links.
+  - Add the **Tech Support** tab in the sandbox (5 presets, `ENGINEER_INBOX`, calendar view, `tech_schedules`).
