@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-import scheduling as sch
+from core import scheduling as sch
 
 NOW = datetime(2026, 11, 6, 10, 0, tzinfo=sch.BUSINESS_TZ)  # a Friday
 

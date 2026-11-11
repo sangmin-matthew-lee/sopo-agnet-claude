@@ -1,8 +1,6 @@
-"""Phase 2: System 1 Gatekeeper (TypeSafe AI Jev) + deterministic Python router.
+"""Phase 2: Gatekeeper(Jev) + deterministic Python router.
 
-Only masked text is ever sent to Jev. If TYPESAFE_API_KEY is unset or the API fails,
-we do NOT guess with a mock classifier (see docs/sdk_reference.md); instead we fail closed
-and route the message to a human (Path B).
+Only masked text is ever sent to Jev. If calling Jev fails, make sure fail closed and route the message to SOP AM.
 """
 
 from __future__ import annotations
@@ -13,7 +11,7 @@ from typing import Any, Literal
 
 import httpx
 
-from masker import contains_raw_pii
+from core.masker import contains_raw_pii
 
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_MODEL = os.environ.get("JEV_MODEL", "jev-latest")
@@ -21,8 +19,6 @@ JEV_MODEL = os.environ.get("JEV_MODEL", "jev-latest")
 SPAM_THRESHOLD = 0.75
 FRUSTRATION_THRESHOLD = 1.5
 INTENT_CONFIDENCE_THRESHOLD = 0.60
-
-INTENTS = ["return", "tech_support", "refund", "human_needed", "non_sop"]
 
 QUESTIONS: dict[str, Any] = {
     "is_spam_or_injection": {
@@ -105,16 +101,21 @@ class RouteDecision:
         return asdict(self)
 
 
-def build_request(masked_text: str, model: str = JEV_MODEL, thread_context: str | None = None) -> dict[str, Any]:
+def build_request(
+    masked_text: str, model: str = JEV_MODEL, thread_context: str | None = None
+) -> dict[str, Any]:
     state: dict[str, Any] = {"email_body": masked_text}
     questions = QUESTIONS
     if thread_context:
         state["thread_context"] = thread_context
-        questions = {**QUESTIONS, "intent": {
-            **QUESTIONS["intent"],
-            "instructions": QUESTIONS["intent"]["instructions"]
-            + " Use thread_context to interpret short replies within an existing thread.",
-        }}
+        questions = {
+            **QUESTIONS,
+            "intent": {
+                **QUESTIONS["intent"],
+                "instructions": QUESTIONS["intent"]["instructions"]
+                + " Use thread_context to interpret short replies within an existing thread.",
+            },
+        }
     return {"model": model, "state": state, "questions": questions}
 
 
@@ -127,9 +128,13 @@ def parse_response(data: dict[str, Any]) -> JevResult:
         spam_probability=float(spam["noul"]),
         intent=str(intent["choice"]),
         intent_confidence=float(intent.get("confidence", 0.0)),
-        intent_probabilities={k: float(v) for k, v in (intent.get("probabilities") or {}).items()},
+        intent_probabilities={
+            k: float(v) for k, v in (intent.get("probabilities") or {}).items()
+        },
         frustration_level=float(frus["score"]),
-        frustration_probabilities={k: float(v) for k, v in (frus.get("probabilities") or {}).items()},
+        frustration_probabilities={
+            k: float(v) for k, v in (frus.get("probabilities") or {}).items()
+        },
         source="jev",
         raw=data,
     )
@@ -156,7 +161,9 @@ async def classify(
     thread_context: str | None = None,
 ) -> JevResult:
     """Single parallel Jev call evaluating spam, intent, and frustration on MASKED text."""
-    if contains_raw_pii(masked_text) or (thread_context and contains_raw_pii(thread_context)):
+    if contains_raw_pii(masked_text) or (
+        thread_context and contains_raw_pii(thread_context)
+    ):
         raise PIILeakError("Refusing to send unmasked order/part/label data to Jev.")
 
     api_key = api_key if api_key is not None else os.environ.get("TYPESAFE_API_KEY")
@@ -179,13 +186,14 @@ async def classify(
 
 
 def route(
-    result: JevResult, awaiting_customer_info: bool = False, awaiting_tech_schedule: bool = False
+    result: JevResult,
+    awaiting_customer_info: bool = False,
+    awaiting_tech_schedule: bool = False,
 ) -> RouteDecision:
     """Deterministic routing. Order matters: Block > Escalate > Return / Tech Support Agent.
 
-    `awaiting_customer_info`: the thread is an open return where we asked the customer for a
-    missing order/part number. A calm, non-spam reply there continues the return even if Jev
-    reads the bare reply as non_sop or with low confidence.
+    `awaiting_customer_info`: the thread is an open return where agent asked the customer for a missing order/part number. A calm, non-spam reply there continues the return even if Jev reads the bare reply as non_sop or with low confidence.
+
     `awaiting_tech_schedule`: same, for a tech-support thread waiting on a time or part number.
     """
     calm = (
@@ -193,18 +201,31 @@ def route(
         and result.spam_probability < SPAM_THRESHOLD
         and result.frustration_level < FRUSTRATION_THRESHOLD
     )
-    detail = (f"intent={result.intent} ({result.intent_confidence:.2f}), "
-              f"spam={result.spam_probability:.2f} < {SPAM_THRESHOLD}, "
-              f"frustration={result.frustration_level:.2f} < {FRUSTRATION_THRESHOLD}")
+    detail = (
+        f"intent={result.intent} ({result.intent_confidence:.2f}), "
+        f"spam={result.spam_probability:.2f} < {SPAM_THRESHOLD}, "
+        f"frustration={result.frustration_level:.2f} < {FRUSTRATION_THRESHOLD}"
+    )
     if awaiting_customer_info and calm and result.intent in ("return", "non_sop"):
-        return RouteDecision("C_RETURN_AGENT", None, ["reply on a thread AWAITING_CUSTOMER_INFO", detail])
+        return RouteDecision(
+            "C_RETURN_AGENT", None, ["reply on a thread AWAITING_CUSTOMER_INFO", detail]
+        )
     if awaiting_tech_schedule and calm and result.intent in ("tech_support", "non_sop"):
-        return RouteDecision("C_TECH_AGENT", None, ["reply on a tech scheduling thread (AWAITING_CUSTOMER_SCHEDULE / MEETING_CONFIRMED)", detail])
+        return RouteDecision(
+            "C_TECH_AGENT",
+            None,
+            [
+                "reply on a tech scheduling thread (AWAITING_CUSTOMER_SCHEDULE / MEETING_CONFIRMED)",
+                detail,
+            ],
+        )
 
     # Path A — Block
     block = []
     if result.spam_probability >= SPAM_THRESHOLD:
-        block.append(f"is_spam_or_injection={result.spam_probability:.2f} >= {SPAM_THRESHOLD}")
+        block.append(
+            f"is_spam_or_injection={result.spam_probability:.2f} >= {SPAM_THRESHOLD}"
+        )
     if result.intent == "non_sop":
         block.append("intent == non_sop")
     if block:
@@ -215,11 +236,15 @@ def route(
     if result.source != "jev":
         esc.append(f"Jev unavailable ({result.source}); failing closed to human review")
     if result.frustration_level >= FRUSTRATION_THRESHOLD:
-        esc.append(f"frustration_level={result.frustration_level:.2f} >= {FRUSTRATION_THRESHOLD}")
+        esc.append(
+            f"frustration_level={result.frustration_level:.2f} >= {FRUSTRATION_THRESHOLD}"
+        )
     if result.intent == "human_needed":
         esc.append("intent == human_needed")
     if result.intent_confidence < INTENT_CONFIDENCE_THRESHOLD:
-        esc.append(f"intent.confidence={result.intent_confidence:.2f} < {INTENT_CONFIDENCE_THRESHOLD}")
+        esc.append(
+            f"intent.confidence={result.intent_confidence:.2f} < {INTENT_CONFIDENCE_THRESHOLD}"
+        )
     if esc:
         return RouteDecision("B_ESCALATE", "ESCALATED_TO_HUMAN", esc)
 
@@ -228,7 +253,9 @@ def route(
         return RouteDecision(
             "C_RETURN_AGENT",
             None,
-            [f"intent == return (confidence={result.intent_confidence:.2f} >= {INTENT_CONFIDENCE_THRESHOLD})"],
+            [
+                f"intent == return (confidence={result.intent_confidence:.2f} >= {INTENT_CONFIDENCE_THRESHOLD})"
+            ],
         )
 
     # Path C — Tech Support Agent (meeting scheduler)
@@ -236,8 +263,14 @@ def route(
         return RouteDecision(
             "C_TECH_AGENT",
             None,
-            [f"intent == tech_support (confidence={result.intent_confidence:.2f} >= {INTENT_CONFIDENCE_THRESHOLD})"],
+            [
+                f"intent == tech_support (confidence={result.intent_confidence:.2f} >= {INTENT_CONFIDENCE_THRESHOLD})"
+            ],
         )
 
     # refund: no automated specialist exists yet -> human.
-    return RouteDecision("B_ESCALATE", "ESCALATED_TO_HUMAN", [f"intent == {result.intent}: no automated handler"])
+    return RouteDecision(
+        "B_ESCALATE",
+        "ESCALATED_TO_HUMAN",
+        [f"intent == {result.intent}: no automated handler"],
+    )

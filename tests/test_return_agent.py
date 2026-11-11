@@ -1,5 +1,5 @@
-import db
-from agent import (
+from core import db
+from sop_agents.return_agent import (
     SOPSharedContext,
     build_agent_input,
     build_return_agent,
@@ -7,7 +7,7 @@ from agent import (
     send_return_emails_impl,
     verify_order_and_create_label_impl,
 )
-from masker import contains_raw_pii
+from core.masker import contains_raw_pii
 from tests.fake_model import ScriptedModel
 
 VAULT = {"<ORDER_TOKEN_1>": "ORD-9988", "<PART_TOKEN_1>": "AB-1234"}
@@ -189,7 +189,7 @@ def test_label_not_duplicated_when_present(db_path):
 
 
 def test_instructions_forbid_attachment_wording():
-    from agent import RETURN_AGENT_INSTRUCTIONS
+    from sop_agents.return_agent import RETURN_AGENT_INSTRUCTIONS
     assert "never say the label" in RETURN_AGENT_INSTRUCTIONS and "MUST contain the" in RETURN_AGENT_INSTRUCTIONS
 
 
@@ -230,8 +230,8 @@ async def test_spoof_send_first_then_verify_never_reaches_attacker(db_path):
 
 import pytest  # noqa: E402
 
-from agent import guard_agent_input, guard_tool_result, run_agent  # noqa: E402
-from jev_router import PIILeakError  # noqa: E402
+from sop_agents.return_agent import guard_agent_input, guard_tool_result, run_agent  # noqa: E402
+from core.jev_router import PIILeakError  # noqa: E402
 
 
 async def test_raw_data_in_agent_input_never_reaches_openai(db_path):
@@ -261,7 +261,7 @@ def test_guards_pass_masked_text(db_path):
 
 
 async def test_tool_result_leak_aborts_the_run(db_path, monkeypatch):
-    import agent as agent_mod
+    from sop_agents import return_agent as agent_mod
     monkeypatch.setattr(agent_mod, "verify_order_and_create_label_impl",
                         lambda ctx, o, p, q: "APPROVED: label UPS-RMA-ORD-9988")  # a buggy tool
     model = ScriptedModel([

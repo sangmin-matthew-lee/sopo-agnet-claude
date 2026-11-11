@@ -1,6 +1,6 @@
 import pytest
 
-import db
+from core import db
 
 
 @pytest.fixture

@@ -5,3 +5,7 @@ __pycache__/
 .env
 *.db-shm
 *.db-wal
+
+REVIEW.md
+.dockerignore
+Dockerfile

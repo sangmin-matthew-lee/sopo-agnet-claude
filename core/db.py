@@ -11,11 +11,14 @@ from typing import Any, Iterator
 
 DB_PATH = os.environ.get("SOP_DB_PATH", "sop_demo.db")
 
-COMPANY_NAME = "AxMatt Supply"
 COMPANY_DOMAIN = "axmattsupply.com"
-LEGACY_DOMAIN = "acmesupply.com"  # the demo company's old name; migrated away in _migrate()
+LEGACY_DOMAIN = (
+    "acmesupply.com"  # the demo company's old name; migrated away in _migrate()
+)
 
-SOP_OWNER_EMAIL = "sop-team@axmattsupply.com"  # shared SOP queue: escalations & security alerts
+SOP_OWNER_EMAIL = (
+    "sop-team@axmattsupply.com"  # shared SOP queue: escalations & security alerts
+)
 
 # Named account managers (the per-account `orders.sop_owner_email`).
 AM_JOHN = "sarah.kim@axmattsupply.com"
@@ -97,8 +100,16 @@ CREATE TABLE IF NOT EXISTS simulated_emails (
 );
 """
 
-APP_TABLES = ("orders", "thread_vaults", "processed_messages", "simulated_emails",
-              "staff", "engineer_parts", "calendar_events", "tech_schedules")
+APP_TABLES = (
+    "orders",
+    "thread_vaults",
+    "processed_messages",
+    "simulated_emails",
+    "staff",
+    "engineer_parts",
+    "calendar_events",
+    "tech_schedules",
+)
 # Tables created by openai-agents SQLiteSession in the same DB file.
 AGENT_SESSION_TABLES = ("agent_messages", "agent_sessions")
 
@@ -108,19 +119,56 @@ def now_iso() -> str:
 
 
 def _days_ago(days: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(
+        timespec="seconds"
+    )
 
 
-def seed_orders() -> list[tuple]:
+# Seed row shapes (match the INSERT column order).
+OrderRow = tuple[str, str, str, str, int, str, str, str | None]  # order_id, part, customer, am, qty, status, delivered_at, label
+StaffRow = tuple[str, str, str]  # email, name, role
+EngineerPartRow = tuple[str, str, int]  # engineer_email, part_number, priority
+BusyBlock = tuple[str, int, int, str]  # when, start_hour, end_hour, title
+CalendarRow = tuple[str, str, str, str, str, str | None]  # owner, start_utc, end_utc, title, kind, thread_id
+
+
+def seed_orders() -> list[OrderRow]:
     """Seed rows: (order_id, part_number, customer_email, sop_owner, qty, status, delivered_at, label)."""
     return [
-        ("ORD-9988", "AB-1234", "john@acmecorp.com", ACCOUNT_MANAGERS["john@acmecorp.com"], 2, "DELIVERED", _days_ago(10), None),
-        ("ORD-1111", "CD-5678", "john@acmecorp.com", AM_JOHN, 1, "DELIVERED", _days_ago(45), None),
-        ("ORD-7777", "EF-9012", "mary@betaindustries.com", AM_MARY, 5, "SHIPPED", _days_ago(2), None),
+        (
+            "ORD-9988",
+            "AB-1234",
+            "john@acmecorp.com",
+            ACCOUNT_MANAGERS["john@acmecorp.com"],
+            2,
+            "DELIVERED",
+            _days_ago(10),
+            None,
+        ),
+        (
+            "ORD-1111",
+            "CD-5678",
+            "john@acmecorp.com",
+            AM_JOHN,
+            1,
+            "DELIVERED",
+            _days_ago(45),
+            None,
+        ),
+        (
+            "ORD-7777",
+            "EF-9012",
+            "mary@betaindustries.com",
+            AM_MARY,
+            5,
+            "SHIPPED",
+            _days_ago(2),
+            None,
+        ),
     ]
 
 
-def seed_staff() -> list[tuple]:
+def seed_staff() -> list[StaffRow]:
     return [
         (AM_JOHN, "Sarah Kim", "ACCOUNT_MANAGER"),
         (AM_MARY, "David Park", "ACCOUNT_MANAGER"),
@@ -130,7 +178,7 @@ def seed_staff() -> list[tuple]:
     ]
 
 
-def seed_engineer_parts() -> list[tuple]:
+def seed_engineer_parts() -> list[EngineerPartRow]:
     """(engineer_email, part_number, priority) — lower priority number is asked first."""
     return [
         (ENG_ALEX, "AB-1234", 1),
@@ -141,9 +189,12 @@ def seed_engineer_parts() -> list[tuple]:
 
 
 # Recurring busy blocks per business-day index d (0 = next business day), local hours [start, end).
-_BUSY_PATTERN: dict[str, list[tuple]] = {
+_BUSY_PATTERN: dict[str, list[BusyBlock]] = {
     # Alex: mornings booked on even days, afternoons booked on odd days.
-    ENG_ALEX: [("even", 9, 12, "Customer site visit"), ("odd", 13, 17, "Lab validation")],
+    ENG_ALEX: [
+        ("even", 9, 12, "Customer site visit"),
+        ("odd", 13, 17, "Lab validation"),
+    ],
     # Priya: fully booked on odd days, one stand-up block otherwise.
     ENG_PRIYA: [("odd", 9, 17, "On-site install"), ("even", 9, 10, "Team stand-up")],
     ENG_MARCO: [("all", 10, 12, "Design review")],
@@ -153,19 +204,31 @@ _BUSY_PATTERN: dict[str, list[tuple]] = {
 }
 
 
-def seed_calendar(now: datetime | None = None) -> list[tuple]:
+def seed_calendar(now: datetime | None = None) -> list[CalendarRow]:
     """(owner, start_utc, end_utc, title, kind, thread_id) over the scheduling horizon."""
-    import scheduling as sch
+    from core import scheduling as sch
 
-    rows = []
+    rows: list[CalendarRow] = []
     for d, day in enumerate(sch.business_days(now or sch.now_local())):
         for owner, blocks in _BUSY_PATTERN.items():
             for when, h1, h2, title in blocks:
-                hit = (when == "all" or (when == "even" and d % 2 == 0) or (when == "odd" and d % 2 == 1)
-                       or when == f"day{d}")
+                hit = (
+                    when == "all"
+                    or (when == "even" and d % 2 == 0)
+                    or (when == "odd" and d % 2 == 1)
+                    or when == f"day{d}"
+                )
                 if hit:
-                    rows.append((owner, sch.to_utc_iso(sch.at(day, h1)), sch.to_utc_iso(sch.at(day, h2)),
-                                 title, "BUSY", None))
+                    rows.append(
+                        (
+                            owner,
+                            sch.to_utc_iso(sch.at(day, h1)),
+                            sch.to_utc_iso(sch.at(day, h2)),
+                            title,
+                            "BUSY",
+                            None,
+                        )
+                    )
     return rows
 
 
@@ -185,13 +248,19 @@ def init_db(db_path: str | None = None, seed: bool = True) -> None:
     with get_conn(db_path) as conn:
         conn.executescript(SCHEMA)
         if seed and conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0:
-            conn.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)", seed_orders())
+            conn.executemany(
+                "INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)", seed_orders()
+            )
         if seed and conn.execute("SELECT COUNT(*) FROM staff").fetchone()[0] == 0:
             conn.executemany("INSERT INTO staff VALUES (?,?,?)", seed_staff())
-            conn.executemany("INSERT INTO engineer_parts VALUES (?,?,?)", seed_engineer_parts())
+            conn.executemany(
+                "INSERT INTO engineer_parts VALUES (?,?,?)", seed_engineer_parts()
+            )
             conn.executemany(
                 "INSERT INTO calendar_events (owner_email, start_at, end_at, title, kind, thread_id) "
-                "VALUES (?,?,?,?,?,?)", seed_calendar())
+                "VALUES (?,?,?,?,?,?)",
+                seed_calendar(),
+            )
         _migrate(conn)
 
 
@@ -237,15 +306,10 @@ def reset_db(db_path: str | None = None) -> None:
 
 # ---------------------------------------------------------------- idempotency
 
-def is_message_processed(message_id: str, db_path: str | None = None) -> bool:
-    with get_conn(db_path) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM processed_messages WHERE message_id = ?", (message_id,)
-        ).fetchone()
-        return row is not None
 
-
-def mark_message_processed(message_id: str, thread_id: str, db_path: str | None = None) -> bool:
+def mark_message_processed(
+    message_id: str, thread_id: str, db_path: str | None = None
+) -> bool:
     """Atomically claim a message_id. Returns False if it was already claimed."""
     with get_conn(db_path) as conn:
         cur = conn.execute(
@@ -257,9 +321,12 @@ def mark_message_processed(message_id: str, thread_id: str, db_path: str | None 
 
 # --------------------------------------------------------------- thread vault
 
+
 def load_thread(thread_id: str, db_path: str | None = None) -> dict[str, Any] | None:
     with get_conn(db_path) as conn:
-        row = conn.execute("SELECT * FROM thread_vaults WHERE thread_id = ?", (thread_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM thread_vaults WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
     if row is None:
         return None
     data = dict(row)
@@ -285,7 +352,9 @@ def save_thread(
         )
 
 
-def set_thread_status(thread_id: str, thread_status: str, db_path: str | None = None) -> None:
+def set_thread_status(
+    thread_id: str, thread_status: str, db_path: str | None = None
+) -> None:
     with get_conn(db_path) as conn:
         conn.execute(
             "UPDATE thread_vaults SET thread_status = ?, updated_at = ? WHERE thread_id = ?",
@@ -295,10 +364,14 @@ def set_thread_status(thread_id: str, thread_status: str, db_path: str | None = 
 
 # -------------------------------------------------------------------- orders
 
-def find_order(order_id: str, part_number: str, db_path: str | None = None) -> dict[str, Any] | None:
+
+def find_order(
+    order_id: str, part_number: str, db_path: str | None = None
+) -> dict[str, Any] | None:
     with get_conn(db_path) as conn:
         row = conn.execute(
-            "SELECT * FROM orders WHERE order_id = ? AND part_number = ?", (order_id, part_number)
+            "SELECT * FROM orders WHERE order_id = ? AND part_number = ?",
+            (order_id, part_number),
         ).fetchone()
     return dict(row) if row else None
 
@@ -316,7 +389,9 @@ def find_order_for_customer(
     return dict(row) if row else None
 
 
-def set_return_label(order_id: str, part_number: str, label: str, db_path: str | None = None) -> None:
+def set_return_label(
+    order_id: str, part_number: str, label: str, db_path: str | None = None
+) -> None:
     with get_conn(db_path) as conn:
         conn.execute(
             """UPDATE orders SET status = 'RETURN_INITIATED', return_label = ?
@@ -331,6 +406,7 @@ def list_orders(db_path: str | None = None) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------- simulated emails
+
 
 def insert_email(
     thread_id: str,
@@ -347,23 +423,33 @@ def insert_email(
                VALUES (?,?,?,?,?,?)""",
             (thread_id, inbox_type, recipient_email, subject, body, now_iso()),
         )
-        return int(cur.lastrowid)
+        assert cur.lastrowid is not None  # always set after an INSERT
+        return cur.lastrowid
 
 
 def list_emails(db_path: str | None = None) -> list[dict[str, Any]]:
     with get_conn(db_path) as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM simulated_emails ORDER BY id DESC")]
+        return [
+            dict(r)
+            for r in conn.execute("SELECT * FROM simulated_emails ORDER BY id DESC")
+        ]
 
 
 def list_threads(db_path: str | None = None) -> list[dict[str, Any]]:
     with get_conn(db_path) as conn:
-        rows = [dict(r) for r in conn.execute("SELECT * FROM thread_vaults ORDER BY updated_at DESC")]
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM thread_vaults ORDER BY updated_at DESC"
+            )
+        ]
     for r in rows:
         r["vault"] = json.loads(r.pop("vault_json"))
     return rows
 
 
 # ------------------------------------------------------- tech support: people
+
 
 def find_orders_by_part_for_customer(
     part_number: str, customer_email: str, db_path: str | None = None
@@ -380,7 +466,12 @@ def find_orders_by_part_for_customer(
 
 def part_exists(part_number: str, db_path: str | None = None) -> bool:
     with get_conn(db_path) as conn:
-        return conn.execute("SELECT 1 FROM orders WHERE part_number = ?", (part_number,)).fetchone() is not None
+        return (
+            conn.execute(
+                "SELECT 1 FROM orders WHERE part_number = ?", (part_number,)
+            ).fetchone()
+            is not None
+        )
 
 
 def engineers_for_part(part_number: str, db_path: str | None = None) -> list[str]:
@@ -394,16 +485,22 @@ def engineers_for_part(part_number: str, db_path: str | None = None) -> list[str
 
 def staff_name(email: str, db_path: str | None = None) -> str:
     with get_conn(db_path) as conn:
-        row = conn.execute("SELECT name FROM staff WHERE email = ?", (email,)).fetchone()
+        row = conn.execute(
+            "SELECT name FROM staff WHERE email = ?", (email,)
+        ).fetchone()
     return row[0] if row else email
 
 
 def list_staff(db_path: str | None = None) -> list[dict[str, Any]]:
     with get_conn(db_path) as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM staff ORDER BY role DESC, name")]
+        return [
+            dict(r)
+            for r in conn.execute("SELECT * FROM staff ORDER BY role DESC, name")
+        ]
 
 
 # ----------------------------------------------------- tech support: calendars
+
 
 def busy_intervals(
     email: str, db_path: str | None = None, exclude_thread: str | None = None
@@ -419,8 +516,13 @@ def busy_intervals(
 
 
 def add_calendar_event(
-    owner_email: str, start_utc: str, end_utc: str, title: str, kind: str,
-    thread_id: str | None = None, db_path: str | None = None,
+    owner_email: str,
+    start_utc: str,
+    end_utc: str,
+    title: str,
+    kind: str,
+    thread_id: str | None = None,
+    db_path: str | None = None,
 ) -> int:
     with get_conn(db_path) as conn:
         cur = conn.execute(
@@ -428,25 +530,39 @@ def add_calendar_event(
             "VALUES (?,?,?,?,?,?)",
             (owner_email, start_utc, end_utc, title, kind, thread_id),
         )
-        return int(cur.lastrowid)
+        assert cur.lastrowid is not None  # always set after an INSERT
+        return cur.lastrowid
 
 
 def delete_thread_meetings(thread_id: str, db_path: str | None = None) -> int:
     with get_conn(db_path) as conn:
-        cur = conn.execute("DELETE FROM calendar_events WHERE kind = 'MEETING' AND thread_id = ?", (thread_id,))
+        cur = conn.execute(
+            "DELETE FROM calendar_events WHERE kind = 'MEETING' AND thread_id = ?",
+            (thread_id,),
+        )
         return cur.rowcount
 
 
 def list_calendar_events(db_path: str | None = None) -> list[dict[str, Any]]:
     with get_conn(db_path) as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM calendar_events ORDER BY start_at, owner_email")]
+        return [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM calendar_events ORDER BY start_at, owner_email"
+            )
+        ]
 
 
 # --------------------------------------------------- tech support: thread state
 
-def get_tech_schedule(thread_id: str, db_path: str | None = None) -> dict[str, Any] | None:
+
+def get_tech_schedule(
+    thread_id: str, db_path: str | None = None
+) -> dict[str, Any] | None:
     with get_conn(db_path) as conn:
-        row = conn.execute("SELECT * FROM tech_schedules WHERE thread_id = ?", (thread_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM tech_schedules WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
     if row is None:
         return None
     data = dict(row)
@@ -454,12 +570,22 @@ def get_tech_schedule(thread_id: str, db_path: str | None = None) -> dict[str, A
     return data
 
 
-def save_tech_schedule(thread_id: str, customer_email: str, db_path: str | None = None, **fields: Any) -> dict[str, Any]:
+def save_tech_schedule(
+    thread_id: str, customer_email: str, db_path: str | None = None, **fields: Any
+) -> dict[str, Any]:
     """Upsert: merges `fields` into the existing row (or a fresh one) and returns the result."""
     cur = get_tech_schedule(thread_id, db_path) or {
-        "thread_id": thread_id, "customer_email": customer_email, "part_number": None, "am_email": None,
-        "engineer_email": None, "rounds": 0, "offered_slots": [], "meeting_start": None,
-        "meeting_link": None, "issue_text": None, "status": "NEW",
+        "thread_id": thread_id,
+        "customer_email": customer_email,
+        "part_number": None,
+        "am_email": None,
+        "engineer_email": None,
+        "rounds": 0,
+        "offered_slots": [],
+        "meeting_start": None,
+        "meeting_link": None,
+        "issue_text": None,
+        "status": "NEW",
     }
     cur.update(fields)
     cur["updated_at"] = now_iso()
@@ -469,33 +595,55 @@ def save_tech_schedule(thread_id: str, customer_email: str, db_path: str | None 
                (thread_id, customer_email, part_number, am_email, engineer_email, rounds,
                 offered_slots_json, meeting_start, meeting_link, issue_text, status, updated_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (cur["thread_id"], cur["customer_email"], cur["part_number"], cur["am_email"],
-             cur["engineer_email"], cur["rounds"], json.dumps(cur["offered_slots"]), cur["meeting_start"],
-             cur["meeting_link"], cur["issue_text"], cur["status"], cur["updated_at"]),
+            (
+                cur["thread_id"],
+                cur["customer_email"],
+                cur["part_number"],
+                cur["am_email"],
+                cur["engineer_email"],
+                cur["rounds"],
+                json.dumps(cur["offered_slots"]),
+                cur["meeting_start"],
+                cur["meeting_link"],
+                cur["issue_text"],
+                cur["status"],
+                cur["updated_at"],
+            ),
         )
     return cur
 
 
 def list_tech_schedules(db_path: str | None = None) -> list[dict[str, Any]]:
     with get_conn(db_path) as conn:
-        rows = [dict(r) for r in conn.execute("SELECT * FROM tech_schedules ORDER BY updated_at DESC")]
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM tech_schedules ORDER BY updated_at DESC"
+            )
+        ]
     for r in rows:
         r["offered_slots"] = json.loads(r.pop("offered_slots_json"))
     return rows
 
 
 def find_upcoming_meeting(
-    customer_email: str, part_number: str | None, now_utc: str, exclude_thread: str | None = None,
+    customer_email: str,
+    part_number: str | None,
+    now_utc: str,
+    exclude_thread: str | None = None,
     db_path: str | None = None,
 ) -> dict[str, Any] | None:
     """The customer's next booked meeting on ANOTHER thread (for this part, or their only one if part is None)."""
     with get_conn(db_path) as conn:
-        rows = [dict(r) for r in conn.execute(
-            "SELECT thread_id, part_number FROM tech_schedules WHERE lower(customer_email) = lower(?) "
-            "AND meeting_start IS NOT NULL AND meeting_start > ? AND thread_id IS NOT ? "
-            "AND status != 'ESCALATED' ORDER BY meeting_start",
-            (customer_email, now_utc, exclude_thread),
-        )]
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT thread_id, part_number FROM tech_schedules WHERE lower(customer_email) = lower(?) "
+                "AND meeting_start IS NOT NULL AND meeting_start > ? AND thread_id IS NOT ? "
+                "ORDER BY meeting_start",
+                (customer_email, now_utc, exclude_thread),
+            )
+        ]
     if part_number is not None:
         rows = [r for r in rows if r["part_number"] == part_number]
     elif len(rows) != 1:
@@ -503,25 +651,52 @@ def find_upcoming_meeting(
     return get_tech_schedule(rows[0]["thread_id"], db_path) if rows else None
 
 
-def has_upcoming_meeting(customer_email: str, now_utc: str, db_path: str | None = None) -> bool:
+def has_upcoming_meeting(
+    customer_email: str, now_utc: str, db_path: str | None = None
+) -> bool:
     with get_conn(db_path) as conn:
-        return conn.execute(
-            "SELECT 1 FROM tech_schedules WHERE lower(customer_email) = lower(?) AND meeting_start > ? "
-            "AND status != 'ESCALATED' LIMIT 1", (customer_email, now_utc),
-        ).fetchone() is not None
+        return (
+            conn.execute(
+                "SELECT 1 FROM tech_schedules WHERE lower(customer_email) = lower(?) AND meeting_start > ? "
+                "LIMIT 1",
+                (customer_email, now_utc),
+            ).fetchone()
+            is not None
+        )
 
 
-def move_tech_schedule(from_thread: str, to_thread: str, db_path: str | None = None) -> dict[str, Any]:
+def move_tech_schedule(
+    from_thread: str, to_thread: str, db_path: str | None = None
+) -> dict[str, Any]:
     """A new email thread adopts a booked meeting: the schedule row and its MEETING events follow it."""
     old = get_tech_schedule(from_thread, db_path)
     if old is None:
         raise KeyError(from_thread)
     new = get_tech_schedule(to_thread, db_path) or {}
-    fields = {k: old[k] for k in ("part_number", "am_email", "engineer_email", "meeting_start", "meeting_link",
-                                  "status")}
-    fields.update(rounds=0, offered_slots=[], issue_text=old["issue_text"] or new.get("issue_text"))
+    fields = {
+        k: old[k]
+        for k in (
+            "part_number",
+            "am_email",
+            "engineer_email",
+            "meeting_start",
+            "meeting_link",
+            "status",
+        )
+    }
+    if (
+        fields["status"] == "ESCALATED"
+    ):  # the meeting is still booked; the new thread starts fresh
+        fields["status"] = "CONFIRMED"
+    fields.update(
+        rounds=0,
+        offered_slots=[],
+        issue_text=old["issue_text"] or new.get("issue_text"),
+    )
     with get_conn(db_path) as conn:
         conn.execute("DELETE FROM tech_schedules WHERE thread_id = ?", (from_thread,))
-        conn.execute("UPDATE calendar_events SET thread_id = ? WHERE kind = 'MEETING' AND thread_id = ?",
-                     (to_thread, from_thread))
+        conn.execute(
+            "UPDATE calendar_events SET thread_id = ? WHERE kind = 'MEETING' AND thread_id = ?",
+            (to_thread, from_thread),
+        )
     return save_tech_schedule(to_thread, old["customer_email"], db_path, **fields)

@@ -1,4 +1,4 @@
-"""Phase 3 & 4: OpenAI Return Specialist agent + local de-masking tools.
+"""Return agent + local de-masking tools.
 
 The LLM only ever sees tokens (<ORDER_TOKEN_1>, <PART_TOKEN_1>, <LABEL_TOKEN_1>).
 Real values live in SOPSharedContext.vault and are resolved only inside these local tools.
@@ -11,12 +11,20 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from agents import Agent, ModelSettings, RunConfig, RunContextWrapper, Runner, SQLiteSession, function_tool
+from agents import (
+    Agent,
+    ModelSettings,
+    RunConfig,
+    RunContextWrapper,
+    Runner,
+    SQLiteSession,
+    function_tool,
+)
 from agents.models.interface import Model
 
-import db
-from jev_router import PIILeakError
-from masker import TOKEN_RE, add_to_vault, contains_raw_pii, tokens_of, unmask_text
+from core import db
+from core.jev_router import PIILeakError
+from core.masker import TOKEN_RE, add_to_vault, contains_raw_pii, tokens_of, unmask_text
 
 RETURN_WINDOW_DAYS = 30
 RETURN_AGENT_MODEL = os.environ.get("RETURN_AGENT_MODEL", "gpt-4o-mini")
@@ -29,7 +37,9 @@ AWAITING_CUSTOMER_INFO = "AWAITING_CUSTOMER_INFO"
 RETURN_LABEL_ISSUED = "RETURN_LABEL_ISSUED"
 RETURN_DENIED = "RETURN_DENIED"
 ESCALATED_TO_HUMAN = "ESCALATED_TO_HUMAN"
-SPOOF_ESCALATED = "ESCALATED_TO_HUMAN"  # spoofing is escalated to SOP like any human case
+SPOOF_ESCALATED = (
+    "ESCALATED_TO_HUMAN"  # spoofing is escalated to SOP like any human case
+)
 
 
 @dataclass
@@ -42,7 +52,9 @@ class SOPSharedContext:
     db_path: str | None = None
     sop_owner_email: str = db.SOP_OWNER_EMAIL
     thread_status: str | None = None
-    locked: bool = False  # set after a security rejection; blocks further outbound customer mail
+    locked: bool = (
+        False  # set after a security rejection; blocks further outbound customer mail
+    )
     label_token: str | None = None  # token of the label issued/reused in this run
     verify_attempted: bool = False  # ownership/eligibility check has run in this turn
     step_logs: list[dict[str, Any]] = field(default_factory=list)
@@ -56,7 +68,8 @@ class SOPSharedContext:
             self.emit({"type": "agent_log", **entry})
 
 
-# --------------------------------------------------------------------- helpers
+# -----------helpers-----------
+
 
 def _resolve(ctx: SOPSharedContext, token: str, kind: str) -> str | None:
     token = (token or "").strip()
@@ -73,29 +86,53 @@ def _days_since(iso: str) -> float:
     return (datetime.now(timezone.utc) - delivered).total_seconds() / 86400
 
 
-def _send(ctx: SOPSharedContext, inbox: str, recipient: str, subject: str, body: str) -> int:
+def _send(
+    ctx: SOPSharedContext, inbox: str, recipient: str, subject: str, body: str
+) -> int:
     return db.insert_email(ctx.thread_id, inbox, recipient, subject, body, ctx.db_path)
 
 
-def _dispatch(ctx: SOPSharedContext, customer_subject: str, customer_body: str, sop_summary: str) -> list[int]:
+def _dispatch(
+    ctx: SOPSharedContext, customer_subject: str, customer_body: str, sop_summary: str
+) -> list[int]:
     """Token de-masking happens here, locally, right before the emails are written."""
     subject = unmask_text(customer_subject, ctx.vault)
-    sent = [_send(ctx, CUSTOMER_INBOX, ctx.customer_email, subject, unmask_text(customer_body, ctx.vault))]
+    sent = [
+        _send(
+            ctx,
+            CUSTOMER_INBOX,
+            ctx.customer_email,
+            subject,
+            unmask_text(customer_body, ctx.vault),
+        )
+    ]
     if sop_summary.strip():
-        sent.append(_send(ctx, SOP_EMPLOYEE_INBOX, ctx.sop_owner_email,
-                          f"[SOP] {subject}", unmask_text(sop_summary, ctx.vault)))
+        sent.append(
+            _send(
+                ctx,
+                SOP_EMPLOYEE_INBOX,
+                ctx.sop_owner_email,
+                f"[SOP] {subject}",
+                unmask_text(sop_summary, ctx.vault),
+            )
+        )
     return sent
 
 
-# ------------------------------------------------- privacy guard before OpenAI
-# Last line of defense, mirroring the Jev guard in jev_router.classify(): if real data is about to be
-# sent to OpenAI, raise instead. The pipeline treats any agent exception as fail-closed (human escalation).
+# -----------privacy guard before OpenAI-----------
+"""Last line of defense. If real data is sent to OpenAI, raise. The pipeline treats any agent exception as fail-closed -> human escalation."""
+
 
 def guard_agent_input(ctx: SOPSharedContext, text: str) -> str:
     """The masked customer email + framing. Must not contain raw order/part/label/link values."""
     if contains_raw_pii(text):
-        ctx.log("guard", rule="no_raw_data_to_openai", where="agent_input",
-                blocked=["order/part/label/link value"], local_only=True)
+        ctx.log(
+            "guard",
+            rule="no_raw_data_to_openai",
+            where="agent_input",
+            blocked=["order/part/label/link value"],
+            local_only=True,
+        )
         raise PIILeakError("Refusing to send unmasked data to OpenAI (agent input).")
     return text
 
@@ -115,41 +152,70 @@ def guard_tool_result(ctx: SOPSharedContext, tool: str, text: str) -> str:
     if f"@{db.COMPANY_DOMAIN}" in low:
         blocked.append("company email address")
     if blocked:
-        ctx.log("guard", rule="no_raw_data_to_openai", where=f"tool_result:{tool}", blocked=blocked, local_only=True)
-        raise PIILeakError(f"Refusing to send unmasked data to OpenAI (result of {tool}).")
+        ctx.log(
+            "guard",
+            rule="no_raw_data_to_openai",
+            where=f"tool_result:{tool}",
+            blocked=blocked,
+            local_only=True,
+        )
+        raise PIILeakError(
+            f"Refusing to send unmasked data to OpenAI (result of {tool})."
+        )
     return text
 
 
-# ---------------------------------------------------------- tool implementations
-# Plain functions so they can be unit tested without an LLM; wrapped as tools below.
+# -----------tools-----------
+
 
 def verify_order_and_create_label_impl(
     ctx: SOPSharedContext, order_token: str, part_token: str, quantity: int = 1
 ) -> str:
-    ctx.log("tool_call", tool="verify_order_and_create_label",
-            args={"order_token": order_token, "part_token": part_token, "quantity": quantity})
+    ctx.log(
+        "tool_call",
+        tool="verify_order_and_create_label",
+        args={
+            "order_token": order_token,
+            "part_token": part_token,
+            "quantity": quantity,
+        },
+    )
     ctx.verify_attempted = True
 
     order_id = _resolve(ctx, order_token, "ORDER")
     part_number = _resolve(ctx, part_token, "PART")
     if order_id is None or part_number is None:
-        missing = [n for n, v in (("order", order_id), ("part", part_number)) if v is None]
-        result = (f"MISSING_INFO: unknown or missing {' and '.join(missing)} token. "
-                  "Ask the customer for it with send_return_emails(request_missing_info=true).")
+        missing = [
+            n for n, v in (("order", order_id), ("part", part_number)) if v is None
+        ]
+        result = (
+            f"MISSING_INFO: unknown or missing {' and '.join(missing)} token. "
+            "Ask the customer for it with send_return_emails(request_missing_info=true)."
+        )
         ctx.log("tool_result", tool="verify_order_and_create_label", result=result)
         return result
 
-    ctx.log("local_unmask", order_token=order_token, order_id=order_id,
-            part_token=part_token, part_number=part_number, local_only=True)
+    ctx.log(
+        "local_unmask",
+        order_token=order_token,
+        order_id=order_id,
+        part_token=part_token,
+        part_number=part_number,
+        local_only=True,
+    )
 
     # Pillar 4 — 3-way anti-spoofing check.
-    order = db.find_order_for_customer(order_id, part_number, ctx.customer_email, ctx.db_path)
+    order = db.find_order_for_customer(
+        order_id, part_number, ctx.customer_email, ctx.db_path
+    )
     if order is None:
         existing = db.find_order(order_id, part_number, ctx.db_path)
         if existing is not None:
             return _reject_spoof(ctx, existing, order_token, part_token)
-        result = (f"NOT_FOUND: no order matches {order_token} with part {part_token}. "
-                  "Ask the customer to double-check both values (request_missing_info=true).")
+        result = (
+            f"NOT_FOUND: no order matches {order_token} with part {part_token}. "
+            "Ask the customer to double-check both values (request_missing_info=true)."
+        )
         ctx.log("tool_result", tool="verify_order_and_create_label", result=result)
         return result
 
@@ -161,17 +227,26 @@ def verify_order_and_create_label_impl(
         reasons.append(f"order status is {order['status']} (must be DELIVERED)")
     age = _days_since(order["delivered_at"])
     if age > RETURN_WINDOW_DAYS:
-        reasons.append(f"delivered {int(age)} days ago, outside the {RETURN_WINDOW_DAYS}-day return window")
+        reasons.append(
+            f"delivered {int(age)} days ago, outside the {RETURN_WINDOW_DAYS}-day return window"
+        )
     if quantity < 1 or quantity > order["purchased_qty"]:
-        reasons.append(f"requested quantity {quantity} exceeds purchased quantity {order['purchased_qty']}")
+        reasons.append(
+            f"requested quantity {quantity} exceeds purchased quantity {order['purchased_qty']}"
+        )
     if reasons:
         ctx.thread_status = RETURN_DENIED
-        result = (f"INELIGIBLE: return for {part_token} on {order_token} denied: " + "; ".join(reasons)
-                  + ". Politely explain this to the customer and notify SOP via send_return_emails.")
+        result = (
+            f"INELIGIBLE: return for {part_token} on {order_token} denied: "
+            + "; ".join(reasons)
+            + ". Politely explain this to the customer and notify SOP via send_return_emails."
+        )
         ctx.log("eligibility", passed=False, reasons=reasons)
         ctx.log("tool_result", tool="verify_order_and_create_label", result=result)
         return result
-    ctx.log("eligibility", passed=True, days_since_delivery=round(age, 1), quantity=quantity)
+    ctx.log(
+        "eligibility", passed=True, days_since_delivery=round(age, 1), quantity=quantity
+    )
 
     # Pillar 6B — DB idempotency.
     if order["status"] == "RETURN_INITIATED" and order["return_label"]:
@@ -184,34 +259,56 @@ def verify_order_and_create_label_impl(
     label_token = add_to_vault(ctx.vault, "LABEL", label)
     ctx.label_token = label_token
     ctx.thread_status = RETURN_LABEL_ISSUED
-    ctx.log("label", label_token=label_token, label=label, reused=reused, local_only=True)
+    ctx.log(
+        "label", label_token=label_token, label=label, reused=reused, local_only=True
+    )
 
     verb = "already existed and was reused" if reused else "was created"
-    result = (f"APPROVED: return label {label_token} {verb} for part {part_token} on order {order_token}. "
-              "Now call send_return_emails with the label token in the customer reply.")
+    result = (
+        f"APPROVED: return label {label_token} {verb} for part {part_token} on order {order_token}. "
+        "Now call send_return_emails with the label token in the customer reply."
+    )
     ctx.log("tool_result", tool="verify_order_and_create_label", result=result)
     return result
 
 
-def _reject_spoof(ctx: SOPSharedContext, order: dict[str, Any], order_token: str, part_token: str) -> str:
+def _reject_spoof(
+    ctx: SOPSharedContext, order: dict[str, Any], order_token: str, part_token: str
+) -> str:
     ctx.locked = True
     ctx.thread_status = SPOOF_ESCALATED
-    ctx.log("anti_spoofing", passed=False, sender=ctx.customer_email, owner=order["customer_email"], local_only=True)
+    ctx.log(
+        "anti_spoofing",
+        passed=False,
+        sender=ctx.customer_email,
+        owner=order["customer_email"],
+        local_only=True,
+    )
     _send(
-        ctx, SOP_EMPLOYEE_INBOX, order["sop_owner_email"],
+        ctx,
+        SOP_EMPLOYEE_INBOX,
+        order["sop_owner_email"],
         f"[SECURITY] Possible spoofed return request on {order['order_id']}",
-        (f"A return was requested for order {order['order_id']} / part {order['part_number']} "
-         f"by {ctx.customer_email}, but this order belongs to {order['customer_email']}.\n\n"
-         f"No label was created. Thread: {ctx.thread_id}. Please review manually."),
+        (
+            f"A return was requested for order {order['order_id']} / part {order['part_number']} "
+            f"by {ctx.customer_email}, but this order belongs to {order['customer_email']}.\n\n"
+            f"No label was created. Thread: {ctx.thread_id}. Please review manually."
+        ),
     )
     _send(
-        ctx, CUSTOMER_INBOX, ctx.customer_email,
+        ctx,
+        CUSTOMER_INBOX,
+        ctx.customer_email,
         "Your return request is under review",
-        ("Thank you for contacting us. We were unable to verify your request automatically, "
-         "so it has been forwarded to our Sales Operations team for manual review."),
+        (
+            "Thank you for contacting us. We were unable to verify your request automatically, "
+            "so it has been forwarded to our Sales Operations team for manual review."
+        ),
     )
-    result = ("REJECTED: the sender is not the owner of this order. The request was escalated to the "
-              "SOP team and the customer was already notified. Do not send any further emails; just stop.")
+    result = (
+        "REJECTED: the sender is not the owner of this order. The request was escalated to the "
+        "SOP team and the customer was already notified. Do not send any further emails; just stop."
+    )
     ctx.log("tool_result", tool="verify_order_and_create_label", result=result)
     return result
 
@@ -223,9 +320,16 @@ def send_return_emails_impl(
     sop_summary: str = "",
     request_missing_info: bool = False,
 ) -> str:
-    ctx.log("tool_call", tool="send_return_emails", args={
-        "customer_subject": customer_subject, "customer_body": customer_body,
-        "sop_summary": sop_summary, "request_missing_info": request_missing_info})
+    ctx.log(
+        "tool_call",
+        tool="send_return_emails",
+        args={
+            "customer_subject": customer_subject,
+            "customer_body": customer_body,
+            "sop_summary": sop_summary,
+            "request_missing_info": request_missing_info,
+        },
+    )
 
     if ctx.locked:
         result = "SKIPPED: this thread is locked after a security rejection; no emails were sent."
@@ -233,18 +337,29 @@ def send_return_emails_impl(
         return result
 
     # Never email a sender about an order before the 3-way ownership check has run.
-    if not ctx.verify_attempted and tokens_of(ctx.vault, "ORDER") and tokens_of(ctx.vault, "PART"):
-        result = ("BLOCKED: an order and a part token are both known, so call "
-                  "verify_order_and_create_label first. No emails were sent.")
+    if (
+        not ctx.verify_attempted
+        and tokens_of(ctx.vault, "ORDER")
+        and tokens_of(ctx.vault, "PART")
+    ):
+        result = (
+            "BLOCKED: an order and a part token are both known, so call "
+            "verify_order_and_create_label first. No emails were sent."
+        )
         ctx.log("guard", rule="verify_before_send", local_only=True)
         ctx.log("tool_result", tool="send_return_emails", result=result)
         return result
 
     # Deterministic backstop: an approved return email must always carry the label number.
     if ctx.label_token and ctx.label_token not in customer_body:
-        customer_body = customer_body.rstrip() + f"\n\nYour return label number: {ctx.label_token}"
-        ctx.log("label_appended", label_token=ctx.label_token,
-                note="LLM omitted the label token; appended locally")
+        customer_body = (
+            customer_body.rstrip() + f"\n\nYour return label number: {ctx.label_token}"
+        )
+        ctx.log(
+            "label_appended",
+            label_token=ctx.label_token,
+            note="LLM omitted the label token; appended locally",
+        )
 
     sent = _dispatch(ctx, customer_subject, customer_body, sop_summary)
 
@@ -258,11 +373,17 @@ def send_return_emails_impl(
     return result
 
 
-# ------------------------------------------------------------------ SDK tools
+# -----------SDK tools-----------
 
-@function_tool(failure_error_function=None)  # tool errors abort the run -> human escalation
+
+@function_tool(
+    failure_error_function=None
+)  # tool errors abort the run -> human escalation
 def verify_order_and_create_label(
-    ctx: RunContextWrapper[SOPSharedContext], order_token: str, part_token: str, quantity: int
+    ctx: RunContextWrapper[SOPSharedContext],
+    order_token: str,
+    part_token: str,
+    quantity: int,
 ) -> str:
     """Verify the order belongs to the sender, check return eligibility, and create (or reuse) a return label.
 
@@ -271,8 +392,13 @@ def verify_order_and_create_label(
         part_token: The part token exactly as it appears, e.g. <PART_TOKEN_1>.
         quantity: Number of units to return. Use 1 if the customer did not say.
     """
-    return guard_tool_result(ctx.context, "verify_order_and_create_label",
-                             verify_order_and_create_label_impl(ctx.context, order_token, part_token, quantity))
+    return guard_tool_result(
+        ctx.context,
+        "verify_order_and_create_label",
+        verify_order_and_create_label_impl(
+            ctx.context, order_token, part_token, quantity
+        ),
+    )
 
 
 @function_tool(failure_error_function=None)
@@ -291,8 +417,17 @@ def send_return_emails(
         sop_summary: Short internal summary for the Sales Operations team. Use an empty string to skip.
         request_missing_info: True if this email asks the customer for a missing order or part number.
     """
-    return guard_tool_result(ctx.context, "send_return_emails", send_return_emails_impl(
-        ctx.context, customer_subject, customer_body, sop_summary, request_missing_info))
+    return guard_tool_result(
+        ctx.context,
+        "send_return_emails",
+        send_return_emails_impl(
+            ctx.context,
+            customer_subject,
+            customer_body,
+            sop_summary,
+            request_missing_info,
+        ),
+    )
 
 
 RETURN_AGENT_INSTRUCTIONS = """\
@@ -334,8 +469,13 @@ def build_return_agent(model: str | Model | None = None) -> Agent[SOPSharedConte
 def build_agent_input(masked_text: str, vault: dict[str, str]) -> str:
     """Masked message + token *names* (never values) known for this thread."""
     known = {k: tokens_of(vault, k) for k in ("ORDER", "PART", "LABEL")}
-    lines = [f"Known {k} tokens in this thread: {', '.join(v) if v else 'none'}" for k, v in known.items()]
-    return "New customer email (PII masked):\n" + masked_text + "\n\n" + "\n".join(lines)
+    lines = [
+        f"Known {k} tokens in this thread: {', '.join(v) if v else 'none'}"
+        for k, v in known.items()
+    ]
+    return (
+        "New customer email (PII masked):\n" + masked_text + "\n\n" + "\n".join(lines)
+    )
 
 
 async def run_return_agent(
@@ -344,8 +484,12 @@ async def run_return_agent(
     model: str | Model | None = None,
     session_db_path: str | None = None,
 ) -> dict[str, Any]:
-    return await run_agent(build_return_agent(model), ctx, build_agent_input(masked_text, ctx.vault),
-                           session_db_path=session_db_path)
+    return await run_agent(
+        build_return_agent(model),
+        ctx,
+        build_agent_input(masked_text, ctx.vault),
+        session_db_path=session_db_path,
+    )
 
 
 async def run_agent(
@@ -357,7 +501,9 @@ async def run_agent(
 ) -> dict[str, Any]:
     """Run any specialist with the thread's SQLiteSession, streaming model output to ctx.emit if set."""
     guard_agent_input(ctx, agent_input)
-    session = SQLiteSession(session_id=ctx.thread_id, db_path=session_db_path or ctx.db_path or db.DB_PATH)
+    session = SQLiteSession(
+        session_id=ctx.thread_id, db_path=session_db_path or ctx.db_path or db.DB_PATH
+    )
     ctx.log("agent_input", text=agent_input)
     kwargs: dict[str, Any] = dict(
         context=ctx,
@@ -379,14 +525,38 @@ async def run_agent(
 
 
 def _forward_model_event(ctx: SOPSharedContext, event: Any) -> None:
-    """Relay the model's own (masked) output to the UI as it is generated."""
+    """Relay the model's own masked output to the UI as it is generated."""
     if ctx.emit is None or getattr(event, "type", None) != "raw_response_event":
         return
     data = event.data
     kind = getattr(data, "type", "")
-    if kind == "response.output_item.added" and getattr(data.item, "type", "") == "function_call":
-        ctx.emit({"type": "agent_delta", "kind": "tool_start", "item_id": data.item.id, "tool": data.item.name})
+    if (
+        kind == "response.output_item.added"
+        and getattr(data.item, "type", "") == "function_call"
+    ):
+        ctx.emit(
+            {
+                "type": "agent_delta",
+                "kind": "tool_start",
+                "item_id": data.item.id,
+                "tool": data.item.name,
+            }
+        )
     elif kind == "response.function_call_arguments.delta":
-        ctx.emit({"type": "agent_delta", "kind": "tool_args", "item_id": data.item_id, "delta": data.delta})
+        ctx.emit(
+            {
+                "type": "agent_delta",
+                "kind": "tool_args",
+                "item_id": data.item_id,
+                "delta": data.delta,
+            }
+        )
     elif kind == "response.output_text.delta":
-        ctx.emit({"type": "agent_delta", "kind": "text", "item_id": data.item_id, "delta": data.delta})
+        ctx.emit(
+            {
+                "type": "agent_delta",
+                "kind": "text",
+                "item_id": data.item_id,
+                "delta": data.delta,
+            }
+        )

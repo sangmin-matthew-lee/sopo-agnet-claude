@@ -3,9 +3,9 @@
 import asyncio
 import json
 
-import db
+from core import db
 import pipeline
-from masker import contains_raw_pii
+from core.masker import contains_raw_pii
 from tests.test_api import APPROVE_SCRIPT, CODE, H, client, jev, stub  # noqa: F401 (fixtures)
 
 
@@ -36,7 +36,7 @@ async def test_happy_path_streams_in_pipeline_order(client, stub):
     assert types[-1] == "done" and events[-1]["result"]["status"] == "RETURN_LABEL_ISSUED"
     assert titles[0] == "Idempotency check passed"
     # Spinners are announced before the slow calls they cover.
-    assert titles.index("Calling Jev System 1…") < titles.index("Jev System 1 classification")
+    assert titles.index("Calling Jev…") < titles.index("Jev classification")
     assert titles.index("Return Agent (gpt-4o-mini) thinking…") < titles.index("Return Agent finished")
     # Agent output arrives as many small deltas, between agent start and finish.
     first_delta = types.index("agent_delta")

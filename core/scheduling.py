@@ -1,8 +1,6 @@
-"""Pure scheduling helpers for the Tech Support Agent (no DB, no LLM).
+"""Scheduling helpers for the Tech Support Agent.
 
-Meetings are 30 minutes, on business days, 09:00–17:00 in BUSINESS_TZ, starting no earlier than
-the next business day and no later than HORIZON_BUSINESS_DAYS business days out.
-All datetimes handled here are timezone-aware.
+Meetings are 30 minutes, on business days, 09:00–17:00 in BUSINESS_TZ, starting no earlier than the next business day and no later than HORIZON_BUSINESS_DAYS business days out.
 """
 
 from __future__ import annotations
@@ -44,7 +42,12 @@ def iso_local(dt: datetime) -> str:
 def human(dt: datetime) -> str:
     """e.g. 'Thu Nov 12, 2:00 PM PST'."""
     d = to_local(dt)
-    return d.strftime("%a %b %d, ") + d.strftime("%I:%M %p").lstrip("0") + " " + d.strftime("%Z")
+    return (
+        d.strftime("%a %b %d, ")
+        + d.strftime("%I:%M %p").lstrip("0")
+        + " "
+        + d.strftime("%Z")
+    )
 
 
 def business_days(now: datetime, count: int = HORIZON_BUSINESS_DAYS) -> list[date]:
@@ -86,10 +89,15 @@ def common_free_slots(
 ) -> list[datetime]:
     """Slots free for everyone, ranked by closeness to `near` (else soonest), one per day first."""
     excluded = {to_local(e) for e in exclude or []}
-    free = [s for s in candidate_slots(now)
-            if s not in excluded and all(is_free(b, s) for b in busy_lists)]
+    free = [
+        s
+        for s in candidate_slots(now)
+        if s not in excluded and all(is_free(b, s) for b in busy_lists)
+    ]
     if near:
-        free.sort(key=lambda s: (min(abs((s - to_local(n)).total_seconds()) for n in near), s))
+        free.sort(
+            key=lambda s: (min(abs((s - to_local(n)).total_seconds()) for n in near), s)
+        )
     picked: list[datetime] = []
     days_used: set[date] = set()
     for s in free:  # first pass: spread across different days
@@ -114,14 +122,24 @@ def parse_slot(value: str, now: datetime) -> datetime:
     try:
         dt = to_local(datetime.fromisoformat((value or "").strip()))
     except ValueError:
-        raise SlotError(f"'{value}' is not an ISO datetime like 2026-11-12T14:00") from None
+        raise SlotError(
+            f"'{value}' is not an ISO datetime like 2026-11-12T14:00"
+        ) from None
     days = business_days(now)
     if dt.date() not in days:
-        raise SlotError(f"{iso_local(dt)} is not within the next {HORIZON_BUSINESS_DAYS} business days "
-                        f"({days[0].isoformat()} to {days[-1].isoformat()})")
+        raise SlotError(
+            f"{iso_local(dt)} is not within the next {HORIZON_BUSINESS_DAYS} business days "
+            f"({days[0].isoformat()} to {days[-1].isoformat()})"
+        )
     if dt.minute % 30 or dt.second:
         raise SlotError(f"{iso_local(dt)} must start on the hour or half hour")
-    if not (DAY_START <= dt.time() and (dt + MEETING).time() <= DAY_END and dt.date() == (dt + MEETING).date()):
-        raise SlotError(f"{iso_local(dt)} is outside business hours "
-                        f"({DAY_START:%H:%M}-{DAY_END:%H:%M} {BUSINESS_TZ_NAME})")
+    if not (
+        DAY_START <= dt.time()
+        and (dt + MEETING).time() <= DAY_END
+        and dt.date() == (dt + MEETING).date()
+    ):
+        raise SlotError(
+            f"{iso_local(dt)} is outside business hours "
+            f"({DAY_START:%H:%M}-{DAY_END:%H:%M} {BUSINESS_TZ_NAME})"
+        )
     return dt

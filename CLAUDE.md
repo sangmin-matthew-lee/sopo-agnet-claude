@@ -54,7 +54,7 @@ Evaluate the **masked email text** in a single parallel Jev API call:
    - Replace all `<TOKENS>` with real values from `ctx.context.vault`.
    - Insert final unmasked emails into `simulated_emails` table (`CUSTOMER_INBOX` and `SOP_EMPLOYEE_INBOX`).
 
-### Phase 3B / 4B: Tech Support Agent (`tech_agent.py`)
+### Phase 3B / 4B: Tech Support Agent (`sop_agents/tech_agent.py`)
 
 - **Path C (Tech):** If `intent == "tech_support"` and `confidence >= 0.60` (and Paths A/B don't apply), invoke the `Tech Support Agent` (`gpt-4o-mini`, same `SQLiteSession(thread_id)`). Replies on a thread in `AWAITING_CUSTOMER_SCHEDULE` continue to this agent (Jev gets a static `TECH_SCHEDULING_CONTEXT`).
 - **Calendars are the source of truth.** The agent reads free/busy for an engineer who knows the part (`engineer_parts`, by priority) and the client's account manager (`orders.sop_owner_email`). It never asks the engineer about times. The engineer and the AM each get **exactly one** invite, at booking time.
