@@ -215,7 +215,7 @@ http://localhost:8080/?code=pick-any-passcode
 | T7  | 구매하지 않은 부품으로 미팅 요청                     | SOP AM에게 `[SECURITY]` 경고, 예약·엔지니어 연락 없음                   | 프리셋 5                                                                                            |
 | T8  | 존재하지 않는 부품번호                               | 부품번호 재확인 요청                                                    | 직접 입력: john@ → `Our ZZ-0000 unit is failing, can an engineer help?`                             |
 | T9  | 제안 시간이 계속 안 맞음(3회 초과)                   | 4번째 조율 메일 대신 AM에게 이관 + 고객 안내                            | 프리셋 2 → ↩ Reply `None of those work, other times?`를 3번(세 번째 답장에서 이관)                  |
-| T10 | 이미 예약된 고객·부품으로 새 미팅 요청               | 새로 예약하지 않고 기존 미팅 안내(고객·부품당 1개)                      | 프리셋 1 이후 프리셋 1 또는 2를 다시 보내기                                                         |
+| T10 | 이미 예약된 고객·부품으로 새 미팅 요청               | 새로 예약하지 않고 기존 미팅 안내(고객·부품당 1개)                      | 프리셋 1 이후 프리셋 2 보내기(프리셋 1은 특정 시간을 말하므로 일정 변경으로 처리될 수 있음)         |
 | T11 | 1순위 엔지니어가 바쁘면 2순위 배정                   | AB-1234: Alex가 바쁜 시간이면 Priya에게 초대                            | 프리셋 1의 시간을 **다음 영업일 오전 10:30**으로 바꿔 보내기(Alex는 바쁘고 Priya·Sarah는 비어 있음) |
 | T12 | 화난 고객 / 스팸 (기술 문의라도)                     | 사람 이관 / 차단 (반품과 같은 안전 규칙)                                | 직접 입력: 대문자로 항의하는 기술 문의                                                              |
 
@@ -258,7 +258,7 @@ http://localhost:8080/?code=pick-any-passcode
 | 19   | **Reset DB** → 프리셋 **4 · Missing Part Number** → ↩ Reply(힌트 문구: 부품 + 시간)               | 부품 요청 → `MEETING_CONFIRMED`                                                     | T6     |
 | 20   | 프리셋 **2 · No Times Given** (같은 John·AB-1234)                                                 | 새로 잡지 않고 19번 미팅 안내                                                       | T10    |
 | 21   | **Reset DB** → 프리셋 **2** → ↩ Reply `Option 2 works for us.`                                    | 제안 → 선택한 시간으로 `MEETING_CONFIRMED`                                          | T4     |
-| 22   | 21번 확인 메일에 **↩ Reply** `Sorry, that time no longer works. Could we do <다른 시간> instead?` | 미팅 이동, 같은 링크, `[Updated invite]` 각 1통, ③ 캘린더 갱신                      | T2     |
+| 22   | 21번 확인 메일에 **↩ Reply** `Sorry, that time no longer works. Could we do <다른 시간> instead?` (`<다른 시간>`은 ③ 캘린더에서 엔지니어·AM 모두 비어 있는 시간) | 미팅 이동, 같은 링크, `[Updated invite]` 각 1통, ③ 캘린더 갱신                      | T2     |
 | 23   | 프리셋 **6 · Reschedule (New Email)**                                                             | 새 스레드가 기존 미팅을 찾아 이동, 중복 예약 없음                                   | T3     |
 | 24   | **Reset DB** → 프리셋 **1 · Happy Path**                                                          | `MEETING_CONFIRMED`, 초대장 각 1통                                                  | T1     |
 | 25   | (선택) Reset DB → 프리셋 1의 시간을 **다음 영업일 오전 10:30**으로 바꿔 Send                      | Priya에게 초대(Alex는 그 시간 고객 방문)                                            | T11    |
