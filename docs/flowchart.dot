@@ -1,4 +1,4 @@
-// Render: dot -Tpng -Gdpi=160 docs/flowchart.dot -o docs/flowchart.png
+// Render: dot -Tpng -Gdpi=140 docs/flowchart.dot -o docs/flowchart.png
 digraph SOPO {
   graph [rankdir=TB, fontname="Apple SD Gothic Neo", nodesep=0.35, ranksep=0.45, bgcolor="white", pad=0.3];
   node  [shape=box, style="rounded,filled", fontname="Apple SD Gothic Neo", fontsize=12, color="#94a3b8",
@@ -9,9 +9,11 @@ digraph SOPO {
 
   subgraph cluster_p1 {
     label="Phase 1 · 100% 로컬 Python"; style="rounded,dashed"; color="#94a3b8"; fontsize=12;
+    gate  [label="IP별 요청 제한 → 패스코드 확인\n(틀린 패스코드도 횟수에 포함)"; shape=box];
     dup   [label="중복 message_id?"; shape=diamond, style="filled", fillcolor="#fff"];
     mask  [label="전처리 (HTML·인용·서명 제거)\nPII 마스킹: ORD-9988 → <ORDER_TOKEN_1>\nAB-1234 → <PART_TOKEN_1>  (원본은 로컬 Vault에만)"];
   }
+  rejected [label="429 / 401 거부\n(처리 안 함)", fillcolor="#f1f5f9"];
   ignored [label="DUPLICATE_IGNORED\n(아무것도 안 함)", fillcolor="#f1f5f9"];
 
   subgraph cluster_p2 {
@@ -41,6 +43,8 @@ digraph SOPO {
     tcal  [label="담당 엔지니어(우선순위) + 고객 AM\n캘린더 free/busy 교집합"];
     tok   [label="고객이 요청한 시간이 비어있나?"; shape=diamond, style="filled", fillcolor="#fff"];
     toffer[label="빈 시간 3개 제안 (고객이 선택)\nAWAITING_CUSTOMER_SCHEDULE\n최대 3회 → 이후 사람에게 이관"];
+    tbooked[label="이미 예정된 미팅 있음?\n(고객·부품당 1개)"; shape=diamond, style="filled", fillcolor="#fff"];
+    tinfo [label="새로 예약하지 않고\n기존 미팅 시간·링크 안내"];
     tbook [label="미팅 예약 / 기존 미팅 이동\n엔지니어·AM에게 초대장 각 1통\nMEETING_CONFIRMED (링크는 <LINK_TOKEN>)", fillcolor="#e0f2fe", color="#0284c7"];
   }
 
@@ -48,7 +52,9 @@ digraph SOPO {
   dispatch [label="Phase 4 · 로컬 발송\n토큰 → 실제 값으로 복원 후 이메일 저장\n(CUSTOMER / SOP / ENGINEER INBOX)", fillcolor="#f0fdf4", color="#16a34a"];
   guard    [label="🔒 OpenAI 호출 전 가드\n원본 주문/부품/라벨/링크·직원 정보가\n보이면 즉시 중단 → 사람에게 이관", shape=note, fillcolor="#fff7ed", color="#ea580c"];
 
-  email -> dup;
+  email -> gate;
+  gate -> rejected [label="초과 / 불일치"];
+  gate -> dup [label="통과"];
   dup -> ignored [label="예"];
   dup -> mask [label="아니오"];
   mask -> jev -> route;
@@ -67,11 +73,13 @@ digraph SOPO {
   tpart -> task [label="아니오"];
   tpart -> town [label="예"];
   town -> security [label="아니오"];
-  town -> tcal [label="예"];
+  town -> tbooked [label="예"];
+  tbooked -> tinfo [label="예 (변경 요청 아님)"];
+  tbooked -> tcal [label="아니오 / 일정 변경"];
   tcal -> tok;
   tok -> tbook [label="예"];
   tok -> toffer [label="아니오 / 시간 없음"];
 
-  {rask rdeny rlabel task toffer tbook} -> dispatch [style=dashed];
+  {rask rdeny rlabel task toffer tbook tinfo} -> dispatch [style=dashed];
   guard -> route [style=invis];
 }
