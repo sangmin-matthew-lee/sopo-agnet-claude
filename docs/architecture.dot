@@ -24,18 +24,11 @@ digraph SOPO_ARCH {
     label=<<TABLE BORDER="0" CELLPADDING="1"><TR><TD ALIGN="LEFT"><B><FONT POINT-SIZE="13" COLOR="#c2410c">로컬 서버 (FastAPI · uvicorn)</FONT></B></TD></TR><TR><TD ALIGN="LEFT"><FONT POINT-SIZE="10" COLOR="#c2410c">실제 값(주문·부품·라벨·링크·직원)은 여기서만 존재</FONT></TD></TR></TABLE>>;
     labeljust=l; style="rounded,dashed"; color="#ea580c"; penwidth=1.6; bgcolor="#fff7ed"; margin=8;
 
-    api [label=<
-      <TABLE BORDER="1" COLOR="#ea580c" CELLBORDER="0" CELLPADDING="3" CELLSPACING="0" STYLE="rounded" BGCOLOR="white">
-        <TR><TD ALIGN="LEFT"><B><FONT POINT-SIZE="13">샌드박스 UI · API</FONT></B></TD></TR>
-        <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="11" COLOR="#334155">요청 제한 → 패스코드 · X-Ray 스트리밍<BR ALIGN="LEFT"/></FONT></TD></TR>
-        <TR><TD ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="10" COLOR="#c2410c">main.py · static/index.html</FONT></TD></TR>
-      </TABLE>>];
-
     mask [label=<
       <TABLE BORDER="1" COLOR="#ea580c" CELLBORDER="0" CELLPADDING="3" CELLSPACING="0" STYLE="rounded" BGCOLOR="white">
         <TR><TD ALIGN="LEFT"><B><FONT POINT-SIZE="13">Phase 1 · 전처리 + 마스킹</FONT></B></TD></TR>
-        <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="11" COLOR="#334155">중복 차단 · HTML/인용/서명 제거<BR ALIGN="LEFT"/>ORD-9988 → &lt;ORDER_TOKEN_1&gt; (Vault)<BR ALIGN="LEFT"/></FONT></TD></TR>
-        <TR><TD ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="10" COLOR="#c2410c">pipeline.py · core/masker.py</FONT></TD></TR>
+        <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="11" COLOR="#334155">요청 제한 · 패스코드 · 중복 차단<BR ALIGN="LEFT"/>HTML/인용/서명 제거<BR ALIGN="LEFT"/>ORD-9988 → &lt;ORDER_TOKEN_1&gt; (Vault)<BR ALIGN="LEFT"/></FONT></TD></TR>
+        <TR><TD ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="10" COLOR="#c2410c">main.py · pipeline.py · core/masker.py</FONT></TD></TR>
       </TABLE>>];
 
     router [label=<
@@ -108,24 +101,23 @@ digraph SOPO_ARCH {
   // (edge labels below use a dark rounded chip with the step number)
 
   // ------------------------------------------------------------------ layout: rows (TB), left→right order
-  { rank=same; customer -> api -> keys [style=invis]; }
-  { rank=same; mask -> jev [style=invis]; }
+  { rank=same; customer -> mask -> jev [style=invis]; }
+  { rank=same; router -> keys [style=invis]; }
   { rank=same; agents -> openai [style=invis]; }
   { rank=same; inbox -> tools [style=invis]; }
   { rank=same; staff -> sqlite [style=invis]; }
   customer -> inbox -> staff [style=invis, weight=10];
-  api -> mask -> router -> agents -> tools -> sqlite [style=invis, weight=20];
+  mask -> router -> agents -> tools -> sqlite [style=invis, weight=20];
 
   // ------------------------------------------------------------------ flow (numbered like the request path)
-  customer -> api   [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 1 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> 이메일</FONT></TD></TR></TABLE>>, weight=0];
-  api -> mask       [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 2 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> 통과</FONT></TD></TR></TABLE>>];
-  mask -> jev       [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 3 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> 마스킹된 본문만</FONT></TD></TR></TABLE>>, color="#2563eb"];
+  customer -> mask  [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 1 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> 이메일</FONT></TD></TR></TABLE>>, weight=0];
+  mask -> jev       [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 2 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> 마스킹된 본문만</FONT></TD></TR></TABLE>>, color="#2563eb"];
   jev -> router     [label=" 점수", color="#2563eb", fontcolor="#1d4ed8", style=dashed];
-  router -> agents  [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 4 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> Path C</FONT></TD></TR></TABLE>>];
-  agents -> openai  [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 5 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> &lt;TOKEN&gt;만 왕복</FONT></TD></TR></TABLE>>, dir=both, color="#2563eb"];
+  router -> agents  [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 3 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> Path C</FONT></TD></TR></TABLE>>];
+  agents -> openai  [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 4 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> &lt;TOKEN&gt;만 왕복</FONT></TD></TR></TABLE>>, dir=both, color="#2563eb"];
   agents -> tools   [label=" 도구 호출"];
-  tools -> sqlite   [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 6 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> 조회 · 저장</FONT></TD></TR></TABLE>>, dir=both];
-  tools -> inbox    [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 7 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> 실제 값으로 발송</FONT></TD></TR></TABLE>>, color="#16a34a"];
+  tools -> sqlite   [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 5 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> 조회 · 저장</FONT></TD></TR></TABLE>>, dir=both];
+  tools -> inbox    [label=<<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="2"><TR><TD BGCOLOR="#1e293b" STYLE="rounded"><FONT COLOR="white" POINT-SIZE="11"><B> 6 </B></FONT></TD><TD><FONT POINT-SIZE="10" COLOR="#334155"> 실제 값으로 발송</FONT></TD></TR></TABLE>>, color="#16a34a"];
   router -> inbox   [xlabel="A 차단 / B 이관 (OpenAI X)", style=dashed, color="#d97706", fontcolor="#b45309", constraint=false];
 
   inbox -> staff    [label=" 확인", style=dashed, color="#16a34a", fontcolor="#15803d"];
