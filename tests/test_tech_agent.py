@@ -1,7 +1,7 @@
-import db
-import scheduling as sch
-from masker import contains_raw_pii
-from tech_agent import (
+from core import db
+from core import scheduling as sch
+from core.masker import contains_raw_pii
+from sop_agents.tech_agent import (
     ENGINEER_INBOX,
     MAX_SCHEDULING_ROUNDS,
     TechSupportContext,
@@ -287,6 +287,37 @@ def test_new_email_thread_adopts_the_existing_meeting(db_path):
     assert check_meeting_availability_impl(ctx, "<PART_TOKEN_1>", [free2], reschedule=True).startswith("AVAILABLE")
     assert book_tech_meeting_impl(ctx, "<PART_TOKEN_1>", free2).startswith("RESCHEDULED")
     assert len(meetings(db_path)) == 2
+
+
+def test_booking_resets_the_round_counter(db_path):
+    """Rounds spent before a booking must not count against a later reschedule."""
+    free = slots(db_path)["free_slot"]["iso"]
+    db.save_tech_schedule("t1", "john@acmecorp.com", db_path, rounds=MAX_SCHEDULING_ROUNDS, part_number="AB-1234")
+    book(db_path, free)
+    assert db.get_tech_schedule("t1", db_path)["rounds"] == 0
+    ctx = ctx_for(db_path)
+    assert check_meeting_availability_impl(ctx, "<PART_TOKEN_1>", [], reschedule=True).startswith("NO_TIME_REQUESTED")
+    assert send_tech_support_emails_impl(ctx, "New times", "Which works?", "", True).startswith("SENT")
+
+
+def test_escalated_reschedule_still_blocks_a_duplicate_meeting(db_path):
+    """A reschedule that hit the round limit keeps its meeting; a new email adopts it instead of booking again."""
+    s = slots(db_path)
+    link = book(db_path, s["free_slot"]["iso"]).vault["<LINK_TOKEN_1>"]
+    db.save_tech_schedule("t1", "john@acmecorp.com", db_path, rounds=MAX_SCHEDULING_ROUNDS)
+    ctx = ctx_for(db_path)
+    check_meeting_availability_impl(ctx, "<PART_TOKEN_1>", [], reschedule=True)
+    assert send_tech_support_emails_impl(ctx, "More", "How about?", "", True).startswith("ESCALATED")
+    assert db.get_tech_schedule("t1", db_path)["status"] == "ESCALATED"
+    assert db.has_upcoming_meeting("john@acmecorp.com", sch.to_utc_iso(sch.now_local()), db_path)
+
+    ctx = ctx_for(db_path, thread_id="t2")
+    out = check_meeting_availability_impl(ctx, "<PART_TOKEN_1>", [s["free_slot_2"]["iso"]])
+    assert out.startswith("ALREADY_BOOKED") and ctx.vault["<LINK_TOKEN_1>"] == link
+    assert not book_tech_meeting_impl(ctx, "<PART_TOKEN_1>", s["free_slot_2"]["iso"]).startswith("BOOKED")
+    assert len(meetings(db_path)) == 2  # still one meeting (engineer + AM), not two
+    sched = db.get_tech_schedule("t2", db_path)
+    assert sched["status"] == "CONFIRMED" and sched["rounds"] == 0
 
 
 def test_new_email_without_part_number_finds_the_only_meeting(db_path):

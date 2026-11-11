@@ -1,6 +1,6 @@
 import pytest
 
-from masker import contains_raw_pii, mask_text, preprocess_email, tokens_of, unmask_text
+from core.masker import contains_raw_pii, mask_text, preprocess_email, tokens_of, unmask_text
 
 
 @pytest.mark.parametrize("raw", ["ord/9988", "ORD - 9988", "ord9988", "ORD-9988", "Ord #9988", "ord_9988", "ORD / 9988"])
@@ -83,6 +83,11 @@ def test_preprocess_strips_signature_dashes():
 def test_preprocess_strips_best_regards():
     text = "Return AB-1234 please.\n\nBest regards,\nJohn\nPhone 555-1234"
     assert preprocess_email(text) == "Return AB-1234 please."
+
+
+def test_preprocess_keeps_body_after_leading_thanks():
+    text = "Thanks,\n\nI need to return AB-1234 from ORD-9988.\n\nBest regards,\nJohn"
+    assert preprocess_email(text) == "Thanks,\n\nI need to return AB-1234 from ORD-9988."
 
 
 def test_preprocess_strips_reply_quotes():

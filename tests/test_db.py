@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-import db
+from core import db
 
 
 def _age_days(iso: str) -> int:
@@ -44,14 +44,13 @@ def test_reset_db_restores_seed_and_clears_state(db_path):
     order = db.find_order("ORD-9988", "AB-1234", db_path)
     assert order["status"] == "DELIVERED" and order["return_label"] is None
     assert db.load_thread("t1", db_path) is None
-    assert not db.is_message_processed("m1", db_path)
+    assert db.mark_message_processed("m1", "t1", db_path) is True  # the claim was wiped
     assert db.list_emails(db_path) == []
 
 
 def test_message_idempotency(db_path):
     assert db.mark_message_processed("m1", "t1", db_path) is True
     assert db.mark_message_processed("m1", "t1", db_path) is False
-    assert db.is_message_processed("m1", db_path)
 
 
 def test_thread_vault_roundtrip(db_path):

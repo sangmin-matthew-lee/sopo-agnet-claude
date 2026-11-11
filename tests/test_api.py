@@ -1,13 +1,13 @@
 import pytest
 from fastapi.testclient import TestClient
 
-import agent as agent_mod
-import db
+from sop_agents import return_agent as agent_mod
+from core import db
 import main
 import pipeline
-import tech_agent
-from jev_router import parse_response
-from masker import contains_raw_pii
+from sop_agents import tech_agent
+from core.jev_router import parse_response
+from core.masker import contains_raw_pii
 from tests.fake_model import ScriptedModel
 
 CODE = "letmein"
@@ -85,6 +85,27 @@ def test_rate_limit(client, monkeypatch):
     monkeypatch.setattr(main.rate_limiter, "limit", 3)
     codes = [client.get("/api/state", headers=H).status_code for _ in range(5)]
     assert codes == [200, 200, 200, 429, 429]
+
+
+def test_rate_limit_ignores_spoofed_forwarded_for(client, monkeypatch):
+    """A client can't dodge the limit by changing the first X-Forwarded-For entry; the proxy's last one counts."""
+    monkeypatch.setattr(main.rate_limiter, "limit", 3)
+    codes = [
+        client.get("/api/state", headers={**H, "X-Forwarded-For": f"10.0.0.{i}, 203.0.113.7"}).status_code
+        for i in range(5)
+    ]
+    assert codes == [200, 200, 200, 429, 429]
+    # A different real client (last entry) has its own bucket.
+    other = client.get("/api/state", headers={**H, "X-Forwarded-For": "10.0.0.1, 198.51.100.9"})
+    assert other.status_code == 200
+
+
+def test_wrong_passcodes_are_rate_limited(client, monkeypatch):
+    """Guessing the passcode counts against the limit, so brute force is throttled."""
+    monkeypatch.setattr(main.rate_limiter, "limit", 3)
+    codes = [client.get("/api/state", headers={"X-Demo-Passcode": f"guess{i}"}).status_code for i in range(5)]
+    assert codes == [401, 401, 401, 429, 429]
+    assert client.get("/api/state", headers=H).status_code == 429  # even the right code waits out the window
 
 
 def test_index_served(client):

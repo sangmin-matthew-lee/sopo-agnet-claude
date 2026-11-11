@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from jev_router import (
+from core.jev_router import (
     JEV_URL,
     JevResult,
     PIILeakError,
@@ -150,12 +150,12 @@ def test_awaiting_thread_keeps_safety_rules(kw, path):
 
 
 def test_awaiting_thread_with_jev_unavailable_still_fails_closed():
-    from jev_router import fail_closed
+    from core.jev_router import fail_closed
     assert route(fail_closed("fallback_no_api_key"), awaiting_customer_info=True).path == "B_ESCALATE"
 
 
 def test_request_includes_thread_context_only_when_given():
-    from jev_router import AWAITING_INFO_CONTEXT
+    from core.jev_router import AWAITING_INFO_CONTEXT
     plain = build_request("it's <ORDER_TOKEN_1>")
     assert "thread_context" not in plain["state"]
     ctxd = build_request("it's <ORDER_TOKEN_1>", thread_context=AWAITING_INFO_CONTEXT)
