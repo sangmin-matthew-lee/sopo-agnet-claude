@@ -169,14 +169,16 @@ http://localhost:8080/?code=pick-any-passcode
 <details>
 <summary><b>4. 플로우차트</b></summary>
 
-![SOPO 에이전트 플로우차트](docs/flowchart.png)
+![SOPO 에이전트 구조도](docs/architecture.png)
 
-- **Phase 1 (로컬):** 중복 확인 → 전처리 → PII 마스킹. 원본 값은 로컬 Vault에만 저장.
-- **Phase 2 (Jev):** 마스킹된 텍스트만 보내 분류하고, Python 규칙이 A(차단) / B(사람) / C1(반품) / C2(기술 지원)로 보냅니다.
-- **Phase 3–4 (OpenAI 에이전트 + 로컬 도구):** 에이전트는 토큰만 보고 도구를 호출합니다. 본인 확인, 자격 심사, 캘린더 확인, 예약, 실제 값 복원·발송은 모두 로컬 Python에서 일어납니다.
+- **① (로컬):** 고객 이메일이 Phase 1로 들어오면 요청 제한·패스코드 확인, 중복 차단 → 전처리 → PII 마스킹. 원본 값은 로컬 Vault에만 저장.
+- **② (Jev):** 마스킹된 본문만 보내 스팸·의도·분노 점수를 받고, Python 규칙 라우터가 A(차단) / B(사람 이관) / C(전문 에이전트)로 보냅니다. A·B는 OpenAI 호출 없이 바로 인박스로 갑니다.
+- **③ → ④ (OpenAI):** Return / Tech Support Agent는 OpenAI와 `<TOKEN>`만 주고받으며 어떤 도구를 부를지 정합니다.
+- **⑤ → ⑥ (로컬 도구):** 본인 확인, 반품 자격, 라벨, 캘린더·예약은 로컬 Python이 SQLite로 처리하고, 실제 값으로 복원한 메일을 인박스(고객·AM·엔지니어)에 넣습니다. 고객이 답장하면 같은 스레드로 다시 ①부터.
+- 빨간 배지는 각 외부 서비스가 쓰는 키이며, 키는 로컬 `.env`에만 있습니다.
 
-원본: [`docs/flowchart.dot`](docs/flowchart.dot)
-(`dot -Tpng -Gdpi=140 docs/flowchart.dot -o docs/flowchart.png`로 다시 생성)
+원본: [`docs/architecture.dot`](docs/architecture.dot)
+(`dot -Tpng -Gdpi=140 docs/architecture.dot -o docs/architecture.png`로 다시 생성)
 
 </details>
 
