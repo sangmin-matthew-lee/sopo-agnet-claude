@@ -80,7 +80,19 @@
             </button>
             <span class="text-slate-500">|</span>
             <div id="presets" class="flex flex-wrap gap-2"></div>
-            <div class="ml-auto flex gap-2 text-xs" id="liveBadges"></div>
+            <div class="ml-auto flex flex-wrap items-center gap-2 text-xs">
+                <span
+                    id="usageBadge"
+                    class="rounded px-2 py-0.5 bg-slate-700"
+                    title="Resend quota (real email mode). Sandbox emails never use it."
+                ></span>
+                <label
+                    class="flex items-center gap-1 text-slate-300"
+                    title="Admin: also show real-email (live tester) orders, threads and emails"
+                    ><input id="showLive" type="checkbox" /> Show live data</label
+                >
+                <div class="flex gap-2" id="liveBadges"></div>
+            </div>
         </header>
         <nav class="bg-slate-800 px-4 flex gap-1 text-xs" id="tabs">
             <button
@@ -1104,14 +1116,39 @@
                     `<table class="text-[11px] w-full"><thead><tr><th class="px-1 py-1 border-b bg-slate-50 text-left">Person</th>${head}</tr></thead><tbody>${rows}</tbody></table>`;
             }
 
+            // Resend quota: sent + received share it (free plan 100/day, 3,000/month, resets 00:00 UTC).
+            function usageText(u) {
+                if (u.exhausted) return "오늘 한도 소진, 내일 다시 시도해 주세요";
+                const n = (x) => Number(x).toLocaleString("en-US");
+                return `오늘 남은 이메일: ${n(u.daily_remaining)} / ${n(u.daily_limit)} · 이번 달: ${n(u.monthly_remaining)} / ${n(u.monthly_limit)} · 약 ${n(u.scenarios_left)}개 시나리오 가능`;
+            }
+            function renderUsage(u) {
+                if (!u) return;
+                const el = $("usageBadge");
+                el.textContent = "✉️ " + usageText(u);
+                el.className =
+                    "rounded px-2 py-0.5 " +
+                    (u.exhausted
+                        ? "bg-rose-700"
+                        : u.low
+                          ? "bg-amber-600"
+                          : "bg-slate-700");
+            }
+            $("showLive").addEventListener("change", () => refreshState());
+
             async function refreshState() {
                 if (!$("passcode").value) {
                     toast("Enter the demo passcode (or open with ?code=...).");
                     return;
                 }
                 try {
-                    const s = await api("/api/state");
+                    const s = await api(
+                        $("showLive").checked
+                            ? "/api/state?include_live=true"
+                            : "/api/state",
+                    );
                     lastState = s;
+                    renderUsage(s.usage);
                     for (const [id, kind, reply] of [
                         ["customerInbox", "CUSTOMER_INBOX", true],
                         ["sopInbox", "SOP_EMPLOYEE_INBOX", false],

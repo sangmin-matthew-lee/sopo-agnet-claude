@@ -225,3 +225,12 @@ def test_reset_live_needs_passcode_and_confirmation(client):
     assert client.post("/api/admin/reset-live", headers=H, json={"confirm": "DELETE ALL LIVE DATA"}).status_code == 200
     assert client.get(f"/t/{token}/state").status_code == 404
     assert db.list_threads(include_live=True) == []
+
+
+def test_pages_are_served(client):
+    signup = client.get("/tester")
+    assert signup.status_code == 200 and "테스터 등록" in signup.text
+    token = token_of(register(client, "a@gmail.com"))
+    page = client.get(f"/t/{token}")
+    assert page.status_code == 200
+    assert '<meta name="referrer" content="no-referrer"' in page.text  # the token never leaks as a Referer

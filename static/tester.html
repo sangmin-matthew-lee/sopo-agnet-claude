@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="ko">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <!-- The dashboard URL is the tester's key: never send it to other sites as a Referer. -->
+        <meta name="referrer" content="no-referrer" />
+        <meta name="robots" content="noindex" />
+        <title>SOPO 실제 이메일 테스트</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <style>
+            pre {
+                white-space: pre-wrap;
+                word-break: break-word;
+            }
+        </style>
+    </head>
+    <body class="bg-slate-100 text-slate-800 text-sm min-h-screen">
+        <!-- Usage badge: always visible -->
+        <div
+            id="usage"
+            class="sticky top-0 z-10 px-3 py-2 text-xs font-semibold text-white bg-slate-800 text-center"
+        >
+            이메일 사용량 확인 중…
+        </div>
+
+        <main class="max-w-2xl mx-auto p-3 space-y-3">
+            <header class="pt-1">
+                <h1 class="text-lg font-bold">SOPO Agent · 실제 이메일 테스트</h1>
+                <p class="text-xs text-slate-500" id="who"></p>
+            </header>
+
+            <div id="toast" class="hidden rounded bg-rose-100 text-rose-800 px-3 py-2 text-xs"></div>
+
+            <!-- ============================ SIGN-UP ============================ -->
+            <section id="signup" class="hidden bg-white rounded-xl shadow p-4 space-y-3">
+                <h2 class="font-semibold">테스터 등록</h2>
+                <p class="text-xs text-slate-500">
+                    초대 코드와 테스트에 쓸 <b>개인 이메일</b>을 입력하세요. 이 주소로 보낸 메일만 처리되고, 답장도 이
+                    주소로 옵니다.
+                </p>
+                <label class="block text-xs"
+                    >초대 코드
+                    <input id="invite" type="password" autocomplete="off"
+                        class="mt-1 w-full border rounded px-3 py-2 text-base" />
+                </label>
+                <label class="block text-xs"
+                    >내 이메일
+                    <input id="email" type="email" autocomplete="email" placeholder="me@gmail.com"
+                        class="mt-1 w-full border rounded px-3 py-2 text-base" />
+                </label>
+                <button id="registerBtn"
+                    class="w-full bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg py-2.5 font-semibold">
+                    등록하기
+                </button>
+                <div id="registered" class="hidden rounded bg-emerald-50 border border-emerald-200 p-3 text-xs space-y-2">
+                    <p class="font-semibold text-emerald-800">등록 완료!</p>
+                    <p>아래 링크가 <b>내 전용 대시보드</b>입니다. 다른 사람에게 공유하지 말고 북마크해 두세요. 다시 발급되지
+                        않습니다.</p>
+                    <div class="flex gap-2">
+                        <input id="dashUrl" readonly class="flex-1 border rounded px-2 py-1 bg-white" />
+                        <button data-copy-from="dashUrl" class="copy bg-slate-700 text-white rounded px-3">복사</button>
+                    </div>
+                    <a id="dashLink" class="block text-center bg-emerald-600 text-white rounded-lg py-2 font-semibold">
+                        대시보드로 이동 →</a>
+                </div>
+            </section>
+
+            <!-- ============================ DASHBOARD ============================ -->
+            <section id="dash" class="hidden space-y-3">
+                <!-- Orders -->
+                <div class="bg-white rounded-xl shadow p-4 space-y-2">
+                    <div class="flex items-center justify-between">
+                        <h2 class="font-semibold">내 테스트 주문</h2>
+                        <span class="text-xs text-slate-400" id="orderCount"></span>
+                    </div>
+                    <div id="orders" class="space-y-1"></div>
+                    <div class="grid grid-cols-2 gap-2 pt-1">
+                        <button data-order="10d"
+                            class="order-btn bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg py-2 text-xs font-semibold">
+                            ＋ 주문 만들기<br /><span class="font-normal">배송 10일 전 · 반품 가능</span>
+                        </button>
+                        <button data-order="45d"
+                            class="order-btn bg-slate-600 hover:bg-slate-500 text-white rounded-lg py-2 text-xs font-semibold">
+                            ＋ 주문 만들기<br /><span class="font-normal">배송 45일 전 · 반품 기간 초과</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- How to send -->
+                <div class="bg-white rounded-xl shadow p-4 space-y-3">
+                    <h2 class="font-semibold">이렇게 보내보세요</h2>
+                    <div class="text-xs">
+                        <div class="text-slate-500">받는 사람</div>
+                        <div class="flex gap-2 items-center mt-1">
+                            <code id="supportAddr" class="flex-1 bg-slate-100 rounded px-2 py-1.5 text-sm"></code>
+                            <button data-copy-from="supportAddr" class="copy bg-slate-700 text-white rounded px-3 py-1.5">복사</button>
+                        </div>
+                        <p class="text-slate-500 mt-2">
+                            등록한 개인 메일함에서 보내세요. 답장은 같은 스레드로 옵니다. 이어서 대화하려면 그 메일에
+                            <b>답장</b>하면 됩니다. 처리에는 보통 30초~1분이 걸립니다.
+                        </p>
+                    </div>
+                    <div id="scenarios" class="space-y-2"></div>
+                </div>
+
+                <!-- Threads -->
+                <div class="bg-white rounded-xl shadow p-4 space-y-2">
+                    <h2 class="font-semibold">내 대화</h2>
+                    <div id="threads" class="space-y-1 text-xs"></div>
+                </div>
+
+                <!-- Tabs -->
+                <div class="bg-white rounded-xl shadow">
+                    <nav class="flex text-xs border-b overflow-x-auto" id="tabs">
+                        <button data-tab="am" class="tab flex-1 whitespace-nowrap px-3 py-2.5 font-semibold">AM 인박스</button>
+                        <button data-tab="eng" class="tab flex-1 whitespace-nowrap px-3 py-2.5 font-semibold">엔지니어 인박스</button>
+                        <button data-tab="sent" class="tab flex-1 whitespace-nowrap px-3 py-2.5 font-semibold">보낸 기록</button>
+                        <button data-tab="xray" class="tab flex-1 whitespace-nowrap px-3 py-2.5 font-semibold">X-Ray</button>
+                    </nav>
+                    <div class="p-3 space-y-2" id="tabBody"></div>
+                </div>
+
+                <p class="text-center text-[11px] text-slate-400 pb-4" id="updated"></p>
+            </section>
+        </main>
+
+        <script>
+            const $ = (id) => document.getElementById(id);
+            const esc = (s) =>
+                String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+            const n = (x) => Number(x).toLocaleString("en-US");
+            const when = (iso) => (iso ? new Date(iso).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" }) : "");
+
+            // Re-render without collapsing what the tester has opened (polling runs every 10 s).
+            function setHtml(el, html, sig = html) {
+                if (el.dataset.sig === sig) return;
+                const open = new Set([...el.querySelectorAll("details[data-key]")].map((d) => d.dataset.key + "|" + d.open));
+                el.innerHTML = html;
+                el.dataset.sig = sig;
+                el.querySelectorAll("details[data-key]").forEach((d) => {
+                    if (open.has(d.dataset.key + "|true")) d.open = true;
+                    else if (open.has(d.dataset.key + "|false")) d.open = false;
+                });
+            }
+
+            function toast(msg) {
+                $("toast").textContent = msg;
+                $("toast").classList.toggle("hidden", !msg);
+            }
+
+            async function copy(text, btn) {
+                try {
+                    await navigator.clipboard.writeText(text);
+                } catch {
+                    const t = document.createElement("textarea");
+                    t.value = text;
+                    document.body.appendChild(t);
+                    t.select();
+                    document.execCommand("copy");
+                    t.remove();
+                }
+                if (btn) {
+                    const old = btn.textContent;
+                    btn.textContent = "복사됨 ✓";
+                    setTimeout(() => (btn.textContent = old), 1200);
+                }
+            }
+            document.addEventListener("click", (e) => {
+                const btn = e.target.closest("[data-copy-from], [data-copy]");
+                if (!btn) return;
+                const src = btn.dataset.copyFrom ? $(btn.dataset.copyFrom) : null;
+                copy(src ? src.value || src.textContent : btn.dataset.copy, btn);
+            });
+
+            // ------------------------------------------------------------ usage badge
+            function renderUsage(u) {
+                const el = $("usage");
+                if (!u) return;
+                el.className =
+                    "sticky top-0 z-10 px-3 py-2 text-xs font-semibold text-white text-center " +
+                    (u.exhausted ? "bg-rose-700" : u.low ? "bg-amber-600" : "bg-slate-800");
+                el.textContent = u.exhausted
+                    ? "오늘 한도 소진, 내일 다시 시도해 주세요"
+                    : `오늘 남은 이메일: ${n(u.daily_remaining)} / ${n(u.daily_limit)} · 이번 달: ${n(u.monthly_remaining)} / ${n(u.monthly_limit)} · 약 ${n(u.scenarios_left)}개 시나리오 가능`;
+                el.title = `보낸 메일과 받은 메일 모두 1통씩 셉니다. 매일 00:00 UTC(한국 09:00)에 초기화됩니다. 시나리오당 평균 ${u.avg_per_scenario}통 기준.`;
+            }
+
+            // --------------------------------------------------------------- sign-up
+            const token = (location.pathname.match(/^\/t\/([^/]+)/) || [])[1];
+
+            async function register() {
+                toast("");
+                const res = await fetch("/tester/register", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ invite_code: $("invite").value, email: $("email").value.trim() }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    const d = data.detail;
+                    return toast(typeof d === "string" ? d : "이메일 형식을 확인해 주세요.");
+                }
+                $("dashUrl").value = data.dashboard_url;
+                $("dashLink").href = data.dashboard_url;
+                $("registered").classList.remove("hidden");
+                $("registerBtn").disabled = true;
+                $("registerBtn").classList.add("opacity-50");
+            }
+
+            // ------------------------------------------------------------- dashboard
+            let state = null;
+            let tab = "am";
+
+            const STATUS = {
+                RETURN_LABEL_ISSUED: "bg-emerald-100 text-emerald-800",
+                MEETING_CONFIRMED: "bg-sky-100 text-sky-800",
+                AWAITING_CUSTOMER_INFO: "bg-indigo-100 text-indigo-800",
+                AWAITING_CUSTOMER_SCHEDULE: "bg-indigo-100 text-indigo-800",
+                ESCALATED_TO_HUMAN: "bg-amber-100 text-amber-800",
+                RETURN_DENIED: "bg-rose-100 text-rose-800",
+                BLOCKED_SPAM: "bg-rose-100 text-rose-800",
+                PROCESSING: "bg-slate-100 text-slate-700",
+                SENT: "bg-emerald-100 text-emerald-800",
+                BLOCKED_QUOTA: "bg-rose-100 text-rose-800",
+                FAILED: "bg-rose-100 text-rose-800",
+            };
+            const pill = (s) =>
+                `<span class="rounded px-1.5 py-0.5 text-[11px] font-semibold ${STATUS[s] || "bg-slate-100"}">${esc(s)}</span>`;
+            const ageDays = (iso) => (Date.now() - new Date(iso).getTime()) / 86400000;
+
+            function scenarios(orders) {
+                const ok = orders.find((o) => ageDays(o.delivered_at) <= 30);
+                const late = orders.find((o) => ageDays(o.delivered_at) > 30);
+                const o1 = ok || { order_id: "ORD-XXXXX", part_number: "XX-0000" };
+                const o2 = late || { order_id: "ORD-XXXXX", part_number: "XX-0000" };
+                return [
+                    {
+                        title: "① 반품 요청",
+                        need: ok ? "" : "‘배송 10일 전’ 주문을 먼저 만드세요",
+                        subject: "Return request",
+                        body: `Hi,\n\nI'd like to return ${o1.part_number} from order ${o1.order_id}. One unit arrived with a cracked housing. Could you send me a return label?\n\nThanks`,
+                    },
+                    {
+                        title: "② 주문번호 누락 (이어서 답장)",
+                        need: ok ? "" : "‘배송 10일 전’ 주문을 먼저 만드세요",
+                        subject: "Return",
+                        body: `Hi,\n\nI need to return ${o1.part_number}, it stopped working. Can you help?`,
+                        hint: `주문번호를 물어보는 답장이 오면, 그 메일에 답장으로 “The order is ${o1.order_id}.” 라고 보내세요.`,
+                    },
+                    {
+                        title: "③ 반품 기간 초과",
+                        need: late ? "" : "‘배송 45일 전’ 주문을 먼저 만드세요",
+                        subject: "Return request",
+                        body: `Hi,\n\nPlease send me a return label for ${o2.part_number} from order ${o2.order_id}.\n\nThanks`,
+                    },
+                    {
+                        title: "④ 기술지원 미팅 요청",
+                        need: ok ? "" : "주문을 먼저 만드세요",
+                        subject: "Need help from an engineer",
+                        body: `Hi,\n\nOur ${o1.part_number} keeps rebooting under load. Could we set up a call with an engineer next Tuesday at 10am or Wednesday at 2pm?\n\nThanks`,
+                    },
+                    {
+                        title: "⑤ 일정 변경",
+                        need: "",
+                        subject: "",
+                        body: "Sorry, that time no longer works for us. Could we move the call to Thursday at 11am instead?",
+                        hint: "④에서 받은 ‘미팅 확정’ 메일에 답장으로 보내세요.",
+                    },
+                ];
+            }
+
+            function renderScenarios(s) {
+                setHtml($("scenarios"), scenarios(s.orders)
+                    .map((sc, i) => {
+                        const mailto = sc.subject
+                            ? `mailto:${encodeURIComponent(s.support_address)}?subject=${encodeURIComponent(sc.subject)}&body=${encodeURIComponent(sc.body)}`
+                            : "";
+                        return `<details data-key="sc-${i}" class="border rounded-lg" ${i === 0 ? "open" : ""}>
+                            <summary class="px-3 py-2 font-semibold text-xs cursor-pointer">${esc(sc.title)}
+                              ${sc.need ? `<span class="ml-1 text-amber-700 font-normal">· ${esc(sc.need)}</span>` : ""}</summary>
+                            <div class="px-3 pb-3 space-y-2 text-xs">
+                              ${sc.subject ? `<div><span class="text-slate-500">제목:</span> ${esc(sc.subject)}</div>` : ""}
+                              <pre class="bg-slate-50 border rounded p-2 text-[12px]">${esc(sc.body)}</pre>
+                              ${sc.hint ? `<p class="text-slate-500">💡 ${esc(sc.hint)}</p>` : ""}
+                              <div class="flex gap-2">
+                                <button data-copy="${esc(sc.body)}" class="flex-1 bg-slate-700 text-white rounded py-1.5">본문 복사</button>
+                                ${mailto ? `<a href="${esc(mailto)}" class="flex-1 text-center bg-emerald-600 text-white rounded py-1.5">메일 앱으로 열기</a>` : ""}
+                              </div>
+                            </div>
+                          </details>`;
+                    })
+                    .join(""));
+            }
+
+            function mailCard(m, meta, key) {
+                return `<details data-key="${esc(key)}" class="border rounded-lg">
+                    <summary class="px-3 py-2 cursor-pointer text-xs">
+                      <div class="flex justify-between gap-2"><span class="font-semibold">${esc(m.subject)}</span>
+                      <span class="text-slate-400 whitespace-nowrap">${esc(when(m.received_at || m.created_at))}</span></div>
+                      <div class="text-slate-500 mt-0.5">${meta}</div>
+                    </summary>
+                    <pre class="px-3 pb-3 text-[12px]">${esc(m.body)}</pre>
+                  </details>`;
+            }
+
+            function renderTab() {
+                document.querySelectorAll(".tab").forEach((b) => {
+                    const on = b.dataset.tab === tab;
+                    b.classList.toggle("text-emerald-700", on);
+                    b.classList.toggle("border-b-2", on);
+                    b.classList.toggle("border-emerald-600", on);
+                    b.classList.toggle("text-slate-500", !on);
+                });
+                if (!state) return;
+                const empty = (t) => `<p class="text-xs text-slate-400">${t}</p>`;
+                let html = "";
+                if (tab === "am" || tab === "eng") {
+                    const list = tab === "am" ? state.am_inbox : state.engineer_inbox;
+                    html = list.length
+                        ? list.map((m) => mailCard(m, `스레드 ${esc(m.thread_id)} · 실제로 수신된 메일`, `in-${m.id}`)).join("")
+                        : empty(tab === "am"
+                            ? "아직 AM에게 간 메일이 없습니다. (에스컬레이션·반품 요약·미팅 초대가 여기에 옵니다)"
+                            : "아직 엔지니어에게 간 메일이 없습니다. (미팅이 예약되면 초대장이 옵니다)");
+                } else if (tab === "sent") {
+                    html = state.sent_log.length
+                        ? state.sent_log
+                              .map((m) => mailCard(m, `${pill(m.status)} ${esc(m.inbox_type)} → ${esc(m.delivered_to || "")}`, `out-${m.id}`))
+                              .join("")
+                        : empty("아직 보낸 메일이 없습니다.");
+                } else {
+                    html = state.traces.length
+                        ? state.traces
+                              .map(
+                                  (t) => `<details data-key="tr-${esc(t.thread_id)}-${esc(t.created_at)}" class="border rounded-lg">
+                                  <summary class="px-3 py-2 cursor-pointer text-xs"><span class="font-semibold">${esc(t.thread_id)}</span>
+                                    <span class="text-slate-400">· ${esc(when(t.created_at))} · ${t.trace.length} steps</span></summary>
+                                  <ol class="px-3 pb-3 space-y-1">${t.trace
+                                      .map((st, j) => {
+                                          const { phase, title, ms, ...rest } = st;
+                                          return `<li class="text-[12px]"><details data-key="st-${esc(t.thread_id)}-${esc(t.created_at)}-${j}"><summary class="cursor-pointer">
+                                            <span class="text-slate-400">${esc(phase)}</span> ${esc(title)}
+                                            <span class="text-slate-400">${esc(ms)}ms</span></summary>
+                                            <pre class="bg-slate-50 border rounded p-2 mt-1 text-[11px]">${esc(JSON.stringify(rest, null, 2))}</pre>
+                                          </details></li>`;
+                                      })
+                                      .join("")}</ol></details>`,
+                              )
+                              .join("")
+                        : empty("메일을 보내면 마스킹 → Jev → 라우터 → 에이전트 단계가 여기에 표시됩니다.");
+                }
+                setHtml($("tabBody"), html, tab + html);
+            }
+
+            function render(s) {
+                state = s;
+                renderUsage(s.usage);
+                $("who").textContent = `${s.tester.email} 로 테스트 중`;
+                $("supportAddr").textContent = s.support_address;
+                if (!s.live_enabled) toast("지금은 실제 이메일 모드가 꺼져 있습니다. 관리자에게 문의하세요.");
+                $("orderCount").textContent = `${s.orders.length}개`;
+                $("orders").innerHTML = s.orders.length
+                    ? s.orders
+                          .map((o) => {
+                              const ok = ageDays(o.delivered_at) <= 30;
+                              return `<div class="flex items-center justify-between border rounded-lg px-3 py-2 text-xs">
+                                <div><span class="font-mono font-semibold">${esc(o.order_id)}</span> · <span class="font-mono">${esc(o.part_number)}</span>
+                                  <span class="text-slate-400">× ${esc(o.purchased_qty)}</span><br/>
+                                  <span class="text-slate-500">배송 ${Math.round(ageDays(o.delivered_at))}일 전 · ${ok ? "반품 가능" : "반품 기간 초과"}</span></div>
+                                <div class="text-right">${pill(o.status)}${o.return_label ? `<div class="font-mono text-[11px] mt-1">${esc(o.return_label)}</div>` : ""}</div>
+                              </div>`;
+                          })
+                          .join("")
+                    : `<p class="text-xs text-slate-400">아직 주문이 없습니다. 아래 버튼으로 만들어 보세요.</p>`;
+                $("threads").innerHTML = s.threads.length
+                    ? s.threads
+                          .map((t) => `<div class="flex justify-between border rounded px-2 py-1.5"><span class="font-mono">${esc(t.thread_id)}</span>${pill(t.thread_status)}</div>`)
+                          .join("")
+                    : `<p class="text-slate-400">아직 대화가 없습니다.</p>`;
+                renderScenarios(s);
+                renderTab();
+                $("updated").textContent = `마지막 갱신 ${new Date().toLocaleTimeString("ko-KR")} · 10초마다 자동 갱신`;
+            }
+
+            async function refresh() {
+                try {
+                    const res = await fetch(`/t/${token}/state`);
+                    if (res.status === 404) return toast("링크가 올바르지 않거나 테스트가 종료되었습니다.");
+                    if (!res.ok) return; // e.g. 429: try again on the next tick
+                    toast("");
+                    render(await res.json());
+                } catch {
+                    /* offline: next tick */
+                }
+            }
+
+            async function createOrder(delivered, btn) {
+                btn.disabled = true;
+                try {
+                    const res = await fetch(`/t/${token}/orders`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ delivered }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) toast(typeof data.detail === "string" ? data.detail : "주문을 만들 수 없습니다.");
+                    await refresh();
+                } finally {
+                    btn.disabled = false;
+                }
+            }
+
+            // ------------------------------------------------------------------ boot
+            if (token) {
+                $("dash").classList.remove("hidden");
+                document.querySelectorAll(".order-btn").forEach((b) =>
+                    b.addEventListener("click", () => createOrder(b.dataset.order, b)),
+                );
+                document.querySelectorAll(".tab").forEach((b) =>
+                    b.addEventListener("click", () => {
+                        tab = b.dataset.tab;
+                        renderTab();
+                    }),
+                );
+                renderTab();
+                refresh();
+                setInterval(() => {
+                    if (!document.hidden) refresh();
+                }, 10000);
+                document.addEventListener("visibilitychange", () => !document.hidden && refresh());
+            } else {
+                $("signup").classList.remove("hidden");
+                $("usage").classList.add("hidden");
+                $("registerBtn").addEventListener("click", register);
+            }
+        </script>
+    </body>
+</html>
