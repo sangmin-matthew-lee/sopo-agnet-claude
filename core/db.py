@@ -100,6 +100,74 @@ CREATE TABLE IF NOT EXISTS simulated_emails (
 );
 """
 
+# Live (real email) mode. None of these are touched by reset_db(); see reset_live().
+LIVE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS testers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    token_hash TEXT NOT NULL UNIQUE,   -- sha256 of the dashboard token; the token itself is never stored
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mail_messages (   -- RFC Message-IDs seen or sent, for In-Reply-To threading
+    rfc_message_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    direction TEXT NOT NULL,           -- IN | OUT
+    subject TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS inbound_events (  -- webhook dedup keys: svix:<id>, email:<id>, msgid:<id>
+    event_key TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS inbound_log (     -- every received email and what we did with it
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email_id TEXT,
+    sender TEXT,
+    recipient TEXT,
+    subject TEXT,
+    decision TEXT NOT NULL,            -- PIPELINE | INTERNAL | IGNORED
+    reason TEXT,
+    thread_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS internal_inbox (  -- what actually arrived at am@ / eng@
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL,                -- AM | ENGINEER
+    thread_id TEXT,                    -- from the X-SOPO-Thread header
+    sender TEXT,
+    recipient TEXT,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    received_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS email_usage (     -- local count of Resend quota use (fallback)
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    direction TEXT NOT NULL,           -- sent | received
+    thread_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS thread_traces (   -- X-Ray of live threads (the sandbox streams it instead)
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT NOT NULL,
+    message_id TEXT,
+    trace_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
+# Columns added after the first release: (table, column, declaration). Added in place by _migrate().
+_ADDED_COLUMNS = (
+    ("thread_vaults", "source", "TEXT NOT NULL DEFAULT 'simulated'"),  # simulated | live
+    ("orders", "tester_id", "INTEGER"),  # NULL = seed/sandbox order
+    ("simulated_emails", "source", "TEXT NOT NULL DEFAULT 'simulated'"),
+    ("simulated_emails", "status", "TEXT NOT NULL DEFAULT 'SIMULATED'"),
+    ("simulated_emails", "delivered_to", "TEXT"),  # real address used by Resend (am@ / eng@ / tester)
+    ("simulated_emails", "provider_id", "TEXT"),
+    ("simulated_emails", "rfc_message_id", "TEXT"),
+)
+
+SIMULATED_SOURCE, LIVE_SOURCE = "simulated", "live"
+
 APP_TABLES = (
     "orders",
     "thread_vaults",
@@ -109,9 +177,14 @@ APP_TABLES = (
     "engineer_parts",
     "calendar_events",
     "tech_schedules",
+    "testers",
+    "mail_messages",
+    "inbound_events",
+    "inbound_log",
+    "internal_inbox",
+    "email_usage",
+    "thread_traces",
 )
-# Tables created by openai-agents SQLiteSession in the same DB file.
-AGENT_SESSION_TABLES = ("agent_messages", "agent_sessions")
 
 
 def now_iso() -> str:
@@ -246,22 +319,39 @@ def get_conn(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
 def init_db(db_path: str | None = None, seed: bool = True) -> None:
     """Create tables if missing; seed orders only when the table is empty."""
     with get_conn(db_path) as conn:
-        conn.executescript(SCHEMA)
-        if seed and conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0:
-            conn.executemany(
-                "INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)", seed_orders()
-            )
+        conn.executescript(SCHEMA + LIVE_SCHEMA)
+        _add_columns(conn)
+        if seed and conn.execute("SELECT COUNT(*) FROM orders WHERE tester_id IS NULL").fetchone()[0] == 0:
+            _seed_orders(conn)
         if seed and conn.execute("SELECT COUNT(*) FROM staff").fetchone()[0] == 0:
             conn.executemany("INSERT INTO staff VALUES (?,?,?)", seed_staff())
             conn.executemany(
                 "INSERT INTO engineer_parts VALUES (?,?,?)", seed_engineer_parts()
             )
-            conn.executemany(
-                "INSERT INTO calendar_events (owner_email, start_at, end_at, title, kind, thread_id) "
-                "VALUES (?,?,?,?,?,?)",
-                seed_calendar(),
-            )
+            _seed_calendar(conn)
         _migrate(conn)
+
+
+_ORDER_COLS = "order_id, part_number, customer_email, sop_owner_email, purchased_qty, status, delivered_at, return_label"
+
+
+def _seed_orders(conn: sqlite3.Connection) -> None:
+    conn.executemany(f"INSERT INTO orders ({_ORDER_COLS}) VALUES (?,?,?,?,?,?,?,?)", seed_orders())
+
+
+def _seed_calendar(conn: sqlite3.Connection) -> None:
+    conn.executemany(
+        "INSERT INTO calendar_events (owner_email, start_at, end_at, title, kind, thread_id) "
+        "VALUES (?,?,?,?,?,?)",
+        seed_calendar(),
+    )
+
+
+def _add_columns(conn: sqlite3.Connection) -> None:
+    for table, col, decl in _ADDED_COLUMNS:
+        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if col not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 # Columns that may hold the demo company's old domain (emails or meeting links).
@@ -296,12 +386,57 @@ def _migrate(conn: sqlite3.Connection) -> None:
             )
 
 
+# Tables created by openai-agents SQLiteSession in the same DB file (keyed by session_id = thread_id).
+AGENT_SESSION_TABLES = ("agent_messages", "agent_sessions")
+
+_LIVE_THREADS = "(SELECT thread_id FROM thread_vaults WHERE source = 'live')"
+
+
+def _delete_agent_sessions(conn: sqlite3.Connection, where: str) -> None:
+    for table in AGENT_SESSION_TABLES:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+            conn.execute(f"DELETE FROM {table} WHERE {where}")
+
+
 def reset_db(db_path: str | None = None) -> None:
-    """Drop all app + agent-session tables, then recreate and reseed."""
+    """Sandbox reset: wipe simulated threads and restore the seed. Live (real email) data is kept."""
+    init_db(db_path, seed=False)  # make sure every table/column exists (old DBs)
     with get_conn(db_path) as conn:
-        for table in APP_TABLES + AGENT_SESSION_TABLES:
-            conn.execute(f"DROP TABLE IF EXISTS {table}")
-    init_db(db_path)
+        live = _LIVE_THREADS
+        _delete_agent_sessions(conn, f"session_id NOT IN {live}")
+        conn.execute(f"DELETE FROM processed_messages WHERE thread_id NOT IN {live}")
+        conn.execute(f"DELETE FROM tech_schedules WHERE thread_id NOT IN {live}")
+        conn.execute(f"DELETE FROM calendar_events WHERE kind = 'BUSY' OR thread_id IS NULL OR thread_id NOT IN {live}")
+        conn.execute(f"DELETE FROM thread_traces WHERE thread_id NOT IN {live}")
+        conn.execute("DELETE FROM simulated_emails WHERE source != 'live'")
+        conn.execute("DELETE FROM thread_vaults WHERE source != 'live'")
+        conn.execute("DELETE FROM orders WHERE tester_id IS NULL")
+        _seed_orders(conn)
+        conn.executemany("INSERT OR IGNORE INTO staff VALUES (?,?,?)", seed_staff())
+        conn.execute("DELETE FROM engineer_parts WHERE part_number IN (SELECT part_number FROM orders WHERE tester_id IS NULL)")
+        conn.executemany("INSERT OR IGNORE INTO engineer_parts VALUES (?,?,?)", seed_engineer_parts())
+        _seed_calendar(conn)
+
+
+def reset_live(db_path: str | None = None) -> None:
+    """Admin only: delete every tester and everything that came through real email.
+
+    email_usage is kept on purpose: deleting our rows doesn't give the Resend quota back.
+    """
+    init_db(db_path, seed=False)
+    with get_conn(db_path) as conn:
+        live = _LIVE_THREADS
+        _delete_agent_sessions(conn, f"session_id IN {live}")
+        for table in ("processed_messages", "tech_schedules", "calendar_events", "thread_traces"):
+            conn.execute(f"DELETE FROM {table} WHERE thread_id IN {live}")
+        conn.execute("DELETE FROM simulated_emails WHERE source = 'live'")
+        conn.execute("DELETE FROM thread_vaults WHERE source = 'live'")
+        conn.execute(
+            "DELETE FROM engineer_parts WHERE part_number IN (SELECT part_number FROM orders WHERE tester_id IS NOT NULL)"
+        )
+        conn.execute("DELETE FROM orders WHERE tester_id IS NOT NULL")
+        for table in ("testers", "mail_messages", "inbound_events", "inbound_log", "internal_inbox"):
+            conn.execute(f"DELETE FROM {table}")
 
 
 # ---------------------------------------------------------------- idempotency
@@ -340,16 +475,27 @@ def save_thread(
     vault: dict[str, str],
     thread_status: str,
     db_path: str | None = None,
+    source: str = SIMULATED_SOURCE,
 ) -> None:
+    """Upsert the thread. `source` is set when the thread is created and never changes."""
     with get_conn(db_path) as conn:
         conn.execute(
-            """INSERT INTO thread_vaults VALUES (?,?,?,?,?)
+            """INSERT INTO thread_vaults
+                 (thread_id, customer_email, vault_json, thread_status, updated_at, source)
+               VALUES (?,?,?,?,?,?)
                ON CONFLICT(thread_id) DO UPDATE SET
                  vault_json = excluded.vault_json,
                  thread_status = excluded.thread_status,
                  updated_at = excluded.updated_at""",
-            (thread_id, customer_email, json.dumps(vault), thread_status, now_iso()),
+            (thread_id, customer_email, json.dumps(vault), thread_status, now_iso(), source),
         )
+
+
+def thread_source(thread_id: str, db_path: str | None = None) -> str:
+    """'live' for threads that came in through real email, else 'simulated' (also for unknown threads)."""
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT source FROM thread_vaults WHERE thread_id = ?", (thread_id,)).fetchone()
+    return row["source"] if row else SIMULATED_SOURCE
 
 
 def set_thread_status(
@@ -400,9 +546,10 @@ def set_return_label(
         )
 
 
-def list_orders(db_path: str | None = None) -> list[dict[str, Any]]:
+def list_orders(db_path: str | None = None, include_live: bool = False) -> list[dict[str, Any]]:
+    where = "" if include_live else "WHERE tester_id IS NULL"
     with get_conn(db_path) as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM orders ORDER BY order_id")]
+        return [dict(r) for r in conn.execute(f"SELECT * FROM orders {where} ORDER BY order_id")]
 
 
 # ---------------------------------------------------------- simulated emails
@@ -415,32 +562,42 @@ def insert_email(
     subject: str,
     body: str,
     db_path: str | None = None,
+    *,
+    source: str = SIMULATED_SOURCE,
+    status: str = "SIMULATED",
+    delivered_to: str | None = None,
+    provider_id: str | None = None,
+    rfc_message_id: str | None = None,
 ) -> int:
     with get_conn(db_path) as conn:
         cur = conn.execute(
             """INSERT INTO simulated_emails
-               (thread_id, inbox_type, recipient_email, subject, body, created_at)
-               VALUES (?,?,?,?,?,?)""",
-            (thread_id, inbox_type, recipient_email, subject, body, now_iso()),
+               (thread_id, inbox_type, recipient_email, subject, body, created_at,
+                source, status, delivered_to, provider_id, rfc_message_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (thread_id, inbox_type, recipient_email, subject, body, now_iso(),
+             source, status, delivered_to, provider_id, rfc_message_id),
         )
         assert cur.lastrowid is not None  # always set after an INSERT
         return cur.lastrowid
 
 
-def list_emails(db_path: str | None = None) -> list[dict[str, Any]]:
+def list_emails(db_path: str | None = None, include_live: bool = False) -> list[dict[str, Any]]:
+    where = "" if include_live else "WHERE source = 'simulated'"
     with get_conn(db_path) as conn:
         return [
             dict(r)
-            for r in conn.execute("SELECT * FROM simulated_emails ORDER BY id DESC")
+            for r in conn.execute(f"SELECT * FROM simulated_emails {where} ORDER BY id DESC")
         ]
 
 
-def list_threads(db_path: str | None = None) -> list[dict[str, Any]]:
+def list_threads(db_path: str | None = None, include_live: bool = False) -> list[dict[str, Any]]:
+    where = "" if include_live else "WHERE source = 'simulated'"
     with get_conn(db_path) as conn:
         rows = [
             dict(r)
             for r in conn.execute(
-                "SELECT * FROM thread_vaults ORDER BY updated_at DESC"
+                f"SELECT * FROM thread_vaults {where} ORDER BY updated_at DESC"
             )
         ]
     for r in rows:
@@ -555,12 +712,13 @@ def delete_thread_meetings(thread_id: str, db_path: str | None = None) -> int:
         return cur.rowcount
 
 
-def list_calendar_events(db_path: str | None = None) -> list[dict[str, Any]]:
+def list_calendar_events(db_path: str | None = None, include_live: bool = False) -> list[dict[str, Any]]:
+    where = "" if include_live else f"WHERE thread_id IS NULL OR thread_id NOT IN {_LIVE_THREADS}"
     with get_conn(db_path) as conn:
         return [
             dict(r)
             for r in conn.execute(
-                "SELECT * FROM calendar_events ORDER BY start_at, owner_email"
+                f"SELECT * FROM calendar_events {where} ORDER BY start_at, owner_email"
             )
         ]
 
@@ -625,12 +783,13 @@ def save_tech_schedule(
     return cur
 
 
-def list_tech_schedules(db_path: str | None = None) -> list[dict[str, Any]]:
+def list_tech_schedules(db_path: str | None = None, include_live: bool = False) -> list[dict[str, Any]]:
+    where = "" if include_live else f"WHERE thread_id NOT IN {_LIVE_THREADS}"
     with get_conn(db_path) as conn:
         rows = [
             dict(r)
             for r in conn.execute(
-                "SELECT * FROM tech_schedules ORDER BY updated_at DESC"
+                f"SELECT * FROM tech_schedules {where} ORDER BY updated_at DESC"
             )
         ]
     for r in rows:
