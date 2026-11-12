@@ -30,14 +30,18 @@ def remember(message_id: str, thread_id: str, direction: str, subject: str | Non
         )
 
 
-def find_thread(ids: list[str], db_path: str | None = None) -> str | None:
-    """The live thread any of these Message-IDs belongs to (the most recent reference wins)."""
+def find_thread(ids: list[str], db_path: str | None = None, *, owner: str | None = None) -> str | None:
+    """The live thread any of these Message-IDs belongs to (the most recent reference wins).
+
+    With `owner`, only that sender's threads match: someone else's reply starts a new thread instead of
+    reading (or writing into) a thread that isn't theirs."""
     with db.get_conn(db_path) as conn:
         for mid in reversed(ids):
             row = conn.execute(
                 """SELECT m.thread_id FROM mail_messages m JOIN thread_vaults t ON t.thread_id = m.thread_id
-                   WHERE m.rfc_message_id = ? AND t.source = 'live'""",
-                (mid,),
+                   WHERE m.rfc_message_id = ? AND t.source = 'live'
+                     AND (? IS NULL OR lower(t.customer_email) = lower(?))""",
+                (mid, owner, owner),
             ).fetchone()
             if row:
                 return row["thread_id"]

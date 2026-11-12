@@ -114,7 +114,7 @@ async def _customer_email(cfg: LiveConfig, email_id: str, usage_id: int, full: d
         return
 
     refs = threads.parse_ids(headers.get("in-reply-to")) + threads.parse_ids(headers.get("references"))
-    thread_id = threads.find_thread(refs) or f"live-{uuid.uuid4().hex[:12]}"
+    thread_id = threads.find_thread(refs, owner=sender) or f"live-{uuid.uuid4().hex[:12]}"
     message_id = message_id or f"<resend-{email_id}@{cfg.test_domain or 'localhost'}>"
     threads.remember(message_id, thread_id, threads.IN, subject)
     usage.attach(usage_id, thread_id)

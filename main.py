@@ -3,8 +3,6 @@ from __future__ import annotations
 import hmac
 import json
 import os
-import time
-from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -14,14 +12,14 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from core import db
+from core.ratelimit import client_ip as _client_ip, rate_limiter
 from pipeline import process_email, process_email_stream
 from sop_agents.tech_agent import demo_slots
+from core.mail import usage
+from live.tester import router as tester_router
 from live.webhook import router as webhook_router
 
 STATIC_DIR = Path(__file__).parent / "static"
-
-RATE_LIMIT_REQUESTS = int(os.environ.get("RATE_LIMIT_REQUESTS", "30"))
-RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60"))
 
 
 @asynccontextmanager
@@ -32,42 +30,10 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="SOP Return & Tech Support Orchestrator", lifespan=lifespan)
 app.include_router(webhook_router)  # real email (Resend); signature-checked, no passcode
+app.include_router(tester_router)  # beta testers: invite code, then a private /t/<token> link
 
 
 # -----------security-----------
-
-
-class RateLimiter:
-    """Rate limiter keyed by client IP (For demo only)."""
-
-    def __init__(self, limit: int, window: int) -> None:
-        self.limit, self.window = limit, window
-        self.hits: dict[str, deque[float]] = defaultdict(deque)
-
-    def allow(self, key: str) -> bool:
-        now = time.monotonic()
-        q = self.hits[key]
-        while q and now - q[0] > self.window:
-            q.popleft()
-        if len(q) >= self.limit:
-            return False
-        q.append(now)
-        return True
-
-    def reset(self) -> None:
-        self.hits.clear()
-
-
-rate_limiter = RateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS)
-
-
-def _client_ip(request: Request) -> str:
-    # Trust exactly one proxy (Cloud Run's front end), which APPENDS the real client IP.
-    # Earlier entries are whatever the client sent, so they can't be used as the key.
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[-1].strip()
-    return request.client.host if request.client else "unknown"
 
 
 def require_passcode(
@@ -133,20 +99,40 @@ async def simulate_email_stream(email: SimulatedEmail) -> StreamingResponse:
 
 @app.post("/api/reset-db", dependencies=[Depends(require_passcode)])
 async def reset_db() -> dict[str, Any]:
+    """Sandbox reset. Real-email (live) testers, orders and threads are kept."""
     db.reset_db()
     return {"ok": True}
 
 
+RESET_LIVE_CONFIRMATION = "DELETE ALL LIVE DATA"
+
+
+class ResetLive(BaseModel):
+    confirm: str = ""
+
+
+@app.post("/api/admin/reset-live", dependencies=[Depends(require_passcode)])
+async def reset_live(req: ResetLive) -> dict[str, Any]:
+    """Delete every tester and all real-email data. Needs the exact confirmation phrase."""
+    if req.confirm != RESET_LIVE_CONFIRMATION:
+        raise HTTPException(400, f'Send {{"confirm": "{RESET_LIVE_CONFIRMATION}"}} to delete all live data.')
+    db.reset_live()
+    return {"ok": True}
+
+
 @app.get("/api/state", dependencies=[Depends(require_passcode)])
-async def state() -> dict[str, Any]:
+async def state(include_live: bool = False) -> dict[str, Any]:
+    """Sandbox data only; include_live=true (the admin toggle) adds real-email data."""
     return {
-        "orders": db.list_orders(),
-        "emails": db.list_emails(),
-        "threads": db.list_threads(),
+        "orders": db.list_orders(include_live=include_live),
+        "emails": db.list_emails(include_live=include_live),
+        "threads": db.list_threads(include_live=include_live),
         "staff": db.list_staff(),
-        "calendar_events": db.list_calendar_events(),
-        "tech_schedules": db.list_tech_schedules(),
+        "calendar_events": db.list_calendar_events(include_live=include_live),
+        "tech_schedules": db.list_tech_schedules(include_live=include_live),
         "tech_demo": demo_slots(),
+        "usage": usage.snapshot(),
+        "include_live": include_live,
         "config": {
             "jev_live": bool(os.environ.get("TYPESAFE_API_KEY")),
             "openai_live": bool(os.environ.get("OPENAI_API_KEY")),
