@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from core import db
 from pipeline import process_email, process_email_stream
 from sop_agents.tech_agent import demo_slots
+from live.webhook import router as webhook_router
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -30,6 +31,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="SOP Return & Tech Support Orchestrator", lifespan=lifespan)
+app.include_router(webhook_router)  # real email (Resend); signature-checked, no passcode
 
 
 # -----------security-----------

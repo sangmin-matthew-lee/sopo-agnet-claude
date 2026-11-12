@@ -44,12 +44,20 @@ def reset_cache() -> None:
     _observed, _last_api_fetch = None, 0.0
 
 
-def record(direction: str, thread_id: str | None = None, db_path: str | None = None) -> None:
+def record(direction: str, thread_id: str | None = None, db_path: str | None = None) -> int:
     with db.get_conn(db_path) as conn:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO email_usage (direction, thread_id, created_at) VALUES (?,?,?)",
             (direction, thread_id, db.now_iso()),
         )
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+
+def attach(usage_id: int, thread_id: str, db_path: str | None = None) -> None:
+    """A received email is counted on arrival; its thread is known only after it's been read."""
+    with db.get_conn(db_path) as conn:
+        conn.execute("UPDATE email_usage SET thread_id = ? WHERE id = ?", (thread_id, usage_id))
 
 
 def note_send_headers(quota: dict[str, int]) -> None:
