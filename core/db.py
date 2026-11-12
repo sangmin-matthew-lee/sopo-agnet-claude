@@ -591,6 +591,14 @@ def list_emails(db_path: str | None = None, include_live: bool = False) -> list[
         ]
 
 
+def save_trace(thread_id: str, message_id: str, steps: list[dict[str, Any]], db_path: str | None = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO thread_traces (thread_id, message_id, trace_json, created_at) VALUES (?,?,?,?)",
+            (thread_id, message_id, json.dumps(steps, default=str), now_iso()),
+        )
+
+
 def list_threads(db_path: str | None = None, include_live: bool = False) -> list[dict[str, Any]]:
     where = "" if include_live else "WHERE source = 'simulated'"
     with get_conn(db_path) as conn:

@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Callable
 Emit = Callable[[dict[str, Any]], None]
 
 from core import db, mail
+from core.mail import usage
 from core import scheduling as sch
 from core.jev_router import (
     AWAITING_INFO_CONTEXT,
@@ -132,11 +133,11 @@ def _escalate(
         f"Escalated thread {thread_id} from {sender.email}.\n"
         f"Reasons: {'; '.join(reasons)}\n\n--- Customer message (unmasked) ---\n{clean_text}"
     )
-    mail.send(thread_id, SOP_EMPLOYEE_INBOX, db.SOP_OWNER_EMAIL, subject, sop_body)
+    mail.send(thread_id, SOP_EMPLOYEE_INBOX, db.SOP_OWNER_EMAIL, subject, sop_body, best_effort=True)
     inboxes = [SOP_EMPLOYEE_INBOX]
     if not (sender.internal or sender.automated):  # colleagues and machines get no holding reply
         reply = HOLDING_REPLY if sender.has_orders else NEW_CONTACT_REPLY
-        mail.send(thread_id, CUSTOMER_INBOX, sender.email, "We've received your message", reply)
+        mail.send(thread_id, CUSTOMER_INBOX, sender.email, "We've received your message", reply, best_effort=True)
         inboxes.append(CUSTOMER_INBOX)
     trace.add("phase2", "Escalated to human", inboxes=inboxes, subject=subject)
 
@@ -147,6 +148,23 @@ async def process_email(
     message_id: str,
     body: str,
     emit: Emit | None = None,
+    source: str = db.SIMULATED_SOURCE,
+) -> dict[str, Any]:
+    """`source` is fixed when the thread is created: 'live' threads (real email) are answered through
+    Resend, every other thread only ever writes to the sandbox inboxes."""
+    result = await _process(sender_email, thread_id, message_id, body, emit, source)
+    if source == db.LIVE_SOURCE and result["status"] != "DUPLICATE_IGNORED":
+        db.save_trace(thread_id, message_id, result["trace"])  # the tester page's X-Ray
+    return result
+
+
+async def _process(
+    sender_email: str,
+    thread_id: str,
+    message_id: str,
+    body: str,
+    emit: Emit | None,
+    source: str,
 ) -> dict[str, Any]:
     trace = Trace(emit)
     sender_email = sender_email.strip().lower()
@@ -194,8 +212,16 @@ async def process_email(
         new_tokens=m.new_tokens,
         vault=m.vault,
     )
-    db.save_thread(thread_id, sender_email, m.vault, "PROCESSING")
+    db.save_thread(thread_id, sender_email, m.vault, "PROCESSING", source=source)
     sender = Sender.of(sender_email, m.clean_text)
+    if db.thread_source(thread_id) == db.LIVE_SOURCE and not usage.can_send():
+        # Real email, but no quota left to answer it: a person takes over (nothing is sent).
+        reasons = ["Resend email quota used up; no reply can be sent today"]
+        trace.add("phase1", "Email quota used up — failing closed", reasons=reasons, local_only=True)
+        _escalate(thread_id, sender, m.clean_text, reasons, trace)
+        db.set_thread_status(thread_id, ESCALATED_TO_HUMAN)
+        return {"status": ESCALATED_TO_HUMAN, "thread_status": ESCALATED_TO_HUMAN, "thread_id": thread_id,
+                "route": None, "jev_source": None, "trace": trace.steps}
     if sender.internal or sender.automated or not sender.has_orders:
         trace.add(
             "phase1",
