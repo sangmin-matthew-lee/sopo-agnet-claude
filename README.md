@@ -148,6 +148,7 @@ http://localhost:8080/?code=pick-any-passcode
   - 일정 조율 메일 3회 초과 시 사람에게 이관
 - **데모**
   - 3단 샌드박스(실시간 X-Ray 스트리밍, Returns/Tech 탭, 프리셋 11개)
+  - 실제 이메일 테스트 모드(Resend): 테스터가 개인 메일로 보내고 같은 스레드로 실제 답장을 받음. 샌드박스와 한 서버에서 공존(7번 참고)
 
 ### ⏳ 아직 안 되는 것
 
@@ -164,7 +165,7 @@ http://localhost:8080/?code=pick-any-passcode
 
 **공통 / 운영**
 
-- 실제 메일 수신·발송 없음: 인박스는 DB 테이블(`simulated_emails`)입니다.
+- 실제 메일은 클로즈드 베타용 테스트 모드뿐입니다: 등록한 테스터의 메일만 처리하고, AM·엔지니어 메일은 공용 테스트 주소(`am@`, `eng@`) 두 곳으로만 갑니다. 회사 메일 계정 연동(OAuth)은 없습니다.
 - 구매 문의·견적 자동 처리 없음: 사람에게 이관만 합니다(영업 에이전트 없음). 이관된 메일의 담당자 지정·처리 기한 관리(티켓 시스템)도 없습니다.
 - 사내 메일 판별은 보낸 사람 주소의 도메인만 봅니다. 실제 운영에서는 메일 서버의 SPF/DKIM/DMARC 검증과 함께 써야 합니다(사내로 위장해도 사람에게 넘어갈 뿐 권한은 없음).
 
@@ -292,5 +293,131 @@ http://localhost:8080/?code=pick-any-passcode
 | 28   | 직접 입력(O3 사내 직원 메일)                | SOP에 `[INTERNAL]`, `CUSTOMER_INBOX` 안내 메일 없음                       | O3     |
 | 29   | 직접 입력(O4 자동 응답)                     | SOP에 `[LOW PRIORITY]`, 답장 없음                                         | O4     |
 | 30   | 직접 입력(T13 잠재 고객의 기술 문의)        | 일반 이관, `[SECURITY]` 없음, `ENGINEER_INBOX` 비어 있음                  | T13    |
+
+</details>
+
+<details>
+<summary><b>7. 실제 이메일 테스트 모드 (Resend)</b></summary>
+
+외부 테스터가 **자기 개인 메일**로 `support@<TEST_DOMAIN>`에 메일을 보내고, 에이전트의 답장을 **같은 스레드로** 받는 클로즈드 베타 모드입니다. 수신과 발송 모두 [Resend](https://resend.com) 무료 플랜을 씁니다. 파이프라인(마스킹 → Jev → 라우터 → 에이전트 → 도구 → 가드)은 샌드박스와 똑같습니다.
+
+```
+테스터 개인 메일 ──▶ support@test.example.com ──(MX)──▶ Resend ──webhook──▶ POST /webhook/resend
+                                                                              │ 서명 검증 · 중복 차단 · 허용 목록
+                                                                              ▼
+                                                     Receiving API로 본문 조회 → 기존 파이프라인
+                                                                              │
+테스터 메일함 ◀── Re: 원래 제목 (같은 스레드) ◀── Resend 발송 ◀──────────────────┤
+am@ / eng@   ◀── X-SOPO-Thread 헤더 ◀───────────────────────────────────────────┘ → 다시 수신되어 테스터 페이지의 AM/엔지니어 탭에 표시
+```
+
+### 샌드박스와의 공존
+
+- 발송 방식은 **스레드 출처**로 정해집니다. `/api/simulate-email*`로 만든 스레드는 `MAIL_MODE`와 상관없이 항상 DB에만 저장됩니다(실제 발송 없음, 할당량 소모 없음). `/webhook/resend`로 들어온 스레드만 Resend로 발송합니다.
+- `MAIL_MODE`는 실제 메일 **수신을 켤지**만 정합니다. `simulated`(기본)이면 webhook이 503을 돌려줍니다.
+- 샌드박스의 **Reset DB**는 샌드박스 데이터와 시드만 초기화합니다. 테스터, 테스터 주문, 실제 메일 스레드, AM·엔지니어 수신함, 사용량 기록은 그대로 둡니다.
+- 샌드박스 화면은 샌드박스 데이터만 보여 줍니다. 상단의 **Show live data**를 켜면 실제 메일 데이터도 함께 봅니다(관리자용).
+- 실제 메일 데이터 초기화는 별도 관리자 API입니다(아래 정리 절차 참고).
+
+### 1) 도메인 준비 (서브도메인 사용)
+
+루트 도메인(`mydomain.com`)의 기존 메일은 건드리지 않도록 **서브도메인**(예: `test.mydomain.com`)만 Resend로 보냅니다.
+
+1. Resend 대시보드 → **Domains** → **Add domain** → `test.mydomain.com`
+2. 화면에 나온 **발송용 DNS 레코드**(DKIM TXT, SPF 등)를 DNS에 그대로 추가하고 Verify
+3. 같은 도메인 상세 화면에서 **Receiving** 토글을 켜고, 표시된 **MX 레코드**를 `test.mydomain.com`에 추가합니다. 값은 리전마다 다르니 꼭 화면의 값을 복사하세요.
+4. 수신 레코드가 Verified가 될 때까지 기다립니다.
+
+MX를 서브도메인에만 두면 `@mydomain.com` 메일은 기존 메일 서비스로 계속 갑니다.
+
+### 2) Webhook 등록
+
+1. Resend 대시보드 → **Webhooks** → **Add endpoint**
+2. URL: `https://<서버 주소>/webhook/resend`, 이벤트: **`email.received`**
+3. 생성된 **Signing secret**(`whsec_...`)을 `RESEND_WEBHOOK_SECRET`에 넣습니다.
+
+서버는 Svix 서명(`svix-id`, `svix-timestamp`, `svix-signature`)을 검증하고, 실패하거나 5분 넘게 지난 요청은 401로 거절합니다. 이 엔드포인트에는 Demo-Passcode가 없습니다.
+
+### 3) 환경변수 (`.env`)
+
+| 이름 | 설명 |
+| --- | --- |
+| `MAIL_MODE` | `simulated`(기본, 수신 꺼짐) / `resend`(수신 켜짐) |
+| `RESEND_API_KEY` | Resend API 키 (발송 + 받은 메일 조회) **비밀** |
+| `RESEND_WEBHOOK_SECRET` | webhook 서명 키 `whsec_...` **비밀** |
+| `TEST_DOMAIN` | Resend로 MX를 지정한 서브도메인 |
+| `SUPPORT_ADDRESS` / `AM_ADDRESS` / `ENG_ADDRESS` | 기본값 `support@` / `am@` / `eng@` + `TEST_DOMAIN` |
+| `TESTER_INVITE_CODE` | `/tester` 등록에 필요한 초대 코드 (비우면 등록 닫힘) **비밀** |
+| `MAX_TESTERS` | 최대 테스터 수 (기본 10) |
+| `RESEND_DAILY_LIMIT` / `RESEND_MONTHLY_LIMIT` | 할당량 (기본 100 / 3000) |
+| `PUBLIC_BASE_URL` | 대시보드 링크를 만들 때 쓰는 공개 주소 |
+| `REQUIRE_SENDER_AUTH` | `true`(기본)면 DKIM 또는 DMARC를 통과한 메일만 처리 |
+
+키와 시크릿은 코드·로그에 남기지 않습니다. 오류 로그에는 상태 코드만 남습니다.
+
+### 4) 로컬에서 webhook 테스트
+
+Resend가 로컬 서버에 닿도록 터널을 엽니다. 둘 중 하나를 쓰면 됩니다.
+
+```bash
+# 서버 (MAIL_MODE=resend 등을 .env에 넣은 뒤)
+uv run --env-file .env uvicorn main:app --port 8080
+
+# A. Cloudflare Tunnel (계정 없이 임시 주소)
+cloudflared tunnel --url http://localhost:8080
+# B. ngrok
+ngrok http 8080
+```
+
+출력된 `https://...` 주소 + `/webhook/resend`를 Resend webhook URL로 등록하고, 같은 주소를 `PUBLIC_BASE_URL`에 넣습니다. 임시 주소는 실행할 때마다 바뀌므로 webhook URL도 다시 바꿔야 합니다.
+
+### 5) 테스터 초대
+
+1. 테스터에게 `https://<서버 주소>/tester` 링크와 **초대 코드**를 따로 전달합니다.
+2. 테스터가 초대 코드와 개인 메일을 입력하면 **개인 대시보드 링크** `/t/<token>`이 발급됩니다. 이 링크가 곧 열쇠이므로 공유하지 말라고 안내하세요(다시 발급되지 않습니다).
+3. 대시보드에서 **주문 만들기**(배송 10일 전 = 반품 가능, 45일 전 = 기간 초과)를 누르면 테스터 소유의 주문과 부품이 생기고, 기술 지원용 엔지니어(Alex 1순위, Priya 2순위)도 연결됩니다.
+4. "이렇게 보내보세요"의 예시 문구(반품 요청, 주문번호 누락, 기간 초과, 기술지원 미팅, 일정 변경)를 복사해 `support@`로 보냅니다. 이어서 대화하려면 받은 답장에 그대로 **답장**합니다.
+5. 대시보드는 10초마다 갱신되며, 이 테스터의 스레드에 속한 메일만 보여 줍니다: AM 인박스, 엔지니어 인박스(실제로 수신된 메일), 보낸 기록, X-Ray.
+
+처리 규칙:
+
+- 등록되지 않은 주소, 자동 응답(`Auto-Submitted`가 `no`가 아님), `mailer-daemon`·`postmaster`, 우리 도메인에서 온 메일은 처리하지 않고 기록만 남깁니다.
+- 같은 이벤트·같은 메일(`email_id`, `Message-ID`)은 한 번만 처리합니다.
+- AM·엔지니어 메일은 DB의 직원 정보(Sarah, Alex 등)는 그대로 두고, 발송할 때만 `am@` / `eng@`로 보냅니다. 그래서 엔지니어 우선순위와 캘린더 계산은 샌드박스와 같습니다.
+
+### 6) 할당량 (무료 플랜)
+
+- Resend 무료 플랜은 **보낸 메일과 받은 메일이 같은 할당량**을 씁니다: 하루 100통, 한 달 3,000통. 하루 할당량은 **00:00 UTC**(한국 09:00)에 초기화됩니다.
+- 무시된 메일(등록 안 된 발신자, 자동 응답)도 할당량을 씁니다. AM·엔지니어에게 보낸 메일은 발송 1통 + 다시 수신 1통으로 2통이 듭니다.
+- 상단 배지: `오늘 남은 이메일: N / 100 · 이번 달: M / 3,000 · 약 K개 시나리오 가능`. 서버는 Resend의 실제 사용량(`GET /usage`, 발송 응답의 `x-resend-daily-quota` 헤더)을 우선 쓰고, 없으면 로컬 기록으로 계산합니다. K는 최근 스레드의 평균 사용량으로 나눈 값입니다(데이터가 없으면 반품 5통·기술지원 7통 기준).
+- 남은 수가 20 이하면 주황색, 0이면 "오늘 한도 소진"으로 표시됩니다. 0일 때 들어온 메일은 발송 없이 사람에게 이관되고, 보낸 기록에 `BLOCKED_QUOTA`로 남습니다.
+
+### 7) Cloud Run에 올릴 때 주의
+
+- **SQLite는 인스턴스 로컬 파일**입니다. 반드시 `--max-instances=1`로 배포하세요. 인스턴스가 여러 개면 각자 다른 DB를 갖게 됩니다.
+- 인스턴스가 재시작되거나(새 리비전 배포, 0으로 축소 후 재기동) 교체되면 **DB가 초기화**됩니다. 테스터·주문·스레드가 모두 사라집니다. 테스트 기간에는 `--min-instances=1`로 두는 것을 권장합니다(비용 발생).
+- webhook은 200을 먼저 돌려주고 나머지를 백그라운드에서 처리합니다. Cloud Run은 응답 후 CPU를 줄이므로 `--no-cpu-throttling`(CPU 항상 할당)을 켜세요.
+- 키는 Secret Manager로 넣습니다(`--set-secrets RESEND_API_KEY=resend-api-key:latest,...`).
+- (선택) **Cloud Storage FUSE 볼륨**으로 DB를 버킷에 두면 재시작 후에도 남습니다.
+  ```bash
+  gcloud run deploy sopo --max-instances=1 \
+    --add-volume name=data,type=cloud-storage,bucket=<버킷> \
+    --add-volume-mount volume=data,mount-path=/data \
+    --set-env-vars SOP_DB_PATH=/data/sop_demo.db ...
+  ```
+  단, GCS FUSE는 파일 잠금을 지원하지 않고 느립니다. 인스턴스 1개, 소규모 베타에서만 쓰세요.
+
+### 8) 테스트 종료 후 정리
+
+1. **서비스 내리기:** `MAIL_MODE=simulated`로 바꾸거나 서비스를 삭제합니다(`gcloud run services delete sopo`). 로컬이면 서버와 터널을 끕니다.
+2. **Resend 정리:** Webhook 삭제 → API 키 삭제(Revoke) → 필요하면 도메인의 Receiving을 끄고 서브도메인의 MX 레코드를 지웁니다. 받은 메일은 대시보드 Emails → Receiving 탭에 남아 있습니다. 문서상 받은 메일을 지우는 API가 확인되지 않으므로, 삭제가 필요하면 도메인 삭제 또는 Resend 지원팀에 요청하세요.
+3. **DB 삭제:** 실제 메일 데이터만 지우려면
+   ```bash
+   curl -X POST https://<서버 주소>/api/admin/reset-live \
+     -H "X-Demo-Passcode: <패스코드>" -H "Content-Type: application/json" \
+     -d '{"confirm": "DELETE ALL LIVE DATA"}'
+   ```
+   확인 문구가 정확히 일치해야 실행됩니다. 사용량 기록(`email_usage`)은 Resend 할당량이 되돌아오지 않으므로 남겨 둡니다. 전부 지우려면 서버를 끄고 DB 파일(`sop_demo.db`, GCS 버킷의 파일 포함)을 삭제합니다.
+4. 초대 코드(`TESTER_INVITE_CODE`)를 비워 등록을 닫습니다.
 
 </details>
