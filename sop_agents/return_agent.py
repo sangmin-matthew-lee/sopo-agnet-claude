@@ -22,7 +22,7 @@ from agents import (
 )
 from agents.models.interface import Model
 
-from core import db
+from core import db, mail
 from core.jev_router import PIILeakError
 from core.masker import TOKEN_RE, add_to_vault, contains_raw_pii, tokens_of, unmask_text
 
@@ -89,7 +89,7 @@ def _days_since(iso: str) -> float:
 def _send(
     ctx: SOPSharedContext, inbox: str, recipient: str, subject: str, body: str
 ) -> int:
-    return db.insert_email(ctx.thread_id, inbox, recipient, subject, body, ctx.db_path)
+    return mail.send(ctx.thread_id, inbox, recipient, subject, body, ctx.db_path)
 
 
 def _dispatch(

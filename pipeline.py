@@ -11,7 +11,7 @@ from typing import Any, AsyncIterator, Callable
 
 Emit = Callable[[dict[str, Any]], None]
 
-from core import db
+from core import db, mail
 from core import scheduling as sch
 from core.jev_router import (
     AWAITING_INFO_CONTEXT,
@@ -132,11 +132,11 @@ def _escalate(
         f"Escalated thread {thread_id} from {sender.email}.\n"
         f"Reasons: {'; '.join(reasons)}\n\n--- Customer message (unmasked) ---\n{clean_text}"
     )
-    db.insert_email(thread_id, SOP_EMPLOYEE_INBOX, db.SOP_OWNER_EMAIL, subject, sop_body)
+    mail.send(thread_id, SOP_EMPLOYEE_INBOX, db.SOP_OWNER_EMAIL, subject, sop_body)
     inboxes = [SOP_EMPLOYEE_INBOX]
     if not (sender.internal or sender.automated):  # colleagues and machines get no holding reply
         reply = HOLDING_REPLY if sender.has_orders else NEW_CONTACT_REPLY
-        db.insert_email(thread_id, CUSTOMER_INBOX, sender.email, "We've received your message", reply)
+        mail.send(thread_id, CUSTOMER_INBOX, sender.email, "We've received your message", reply)
         inboxes.append(CUSTOMER_INBOX)
     trace.add("phase2", "Escalated to human", inboxes=inboxes, subject=subject)
 
