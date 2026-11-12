@@ -58,8 +58,8 @@ digraph SOPO {
   dup -> ignored [label="예"];
   dup -> mask [label="아니오"];
   mask -> jev -> route;
-  route -> blockA [label="스팸 ≥ 0.75\n또는 non_sop"];
-  route -> humanB [label="분노 ≥ 1.5 · human_needed\nrefund · 신뢰도 < 0.60"];
+  route -> blockA [label="스팸 ≥ 0.75\n(스팸만 차단)"];
+  route -> humanB [label="분노 ≥ 1.5 · human_needed · refund\nnon_sop(그 외 업무) · 신뢰도 < 0.60\n사내·자동 메일"];
   route -> rmiss  [label="return"];
   route -> tpart  [label="tech_support\n(또는 진행 중인 미팅 스레드)"];
 

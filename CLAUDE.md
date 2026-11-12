@@ -27,13 +27,13 @@ Build a full-stack **Sales Operations (SOP) Return Orchestrator & 3-Column Live 
 Evaluate the **masked email text** in a single parallel Jev API call:
 
 - `is_spam_or_injection` (`noul`): Probability `0.0` to `1.0`.
-- `intent` (`choice`): `["return", "tech_support", "refund", "human_needed", "non_sop"]`.
+- `intent` (`choice`): `["return", "tech_support", "refund", "human_needed", "non_sop"]`. `non_sop` means "other legitimate business" (purchase/quote requests, account questions, colleagues, other departments), not junk.
 - `frustration_level` (`score`): 3-level ordered scale (`0` = calm, `1` = annoyed, `2` = furious/urgent).
 
 **Deterministic Routing Rules in Python:**
 
-- **Path A (Block):** If `is_spam_or_injection >= 0.75` OR `intent == "non_sop"`, update `thread_status = "BLOCKED_SPAM"` and halt. Zero OpenAI tokens spent.
-- **Path B (Human Escalation - Pillar 7):** If `frustration_level >= 1.5` OR `intent == "human_needed"` OR `intent.confidence < 0.60`, bypass OpenAI, write an unmasked alert email into `simulated_emails` (`SOP_EMPLOYEE_INBOX`) and a holding reply into `CUSTOMER_INBOX`, and set `thread_status = "ESCALATED_TO_HUMAN"`.
+- **Path A (Block):** Only if `is_spam_or_injection >= 0.75`: update `thread_status = "BLOCKED_SPAM"` and halt. Zero OpenAI tokens spent. Nothing else is ever dropped silently.
+- **Path B (Human Escalation - Pillar 7):** If `frustration_level >= 1.5` OR `intent in ("human_needed", "refund", "non_sop")` OR `intent.confidence < 0.60` OR the sender is internal (`@axmattsupply.com`) or automated (no-reply / mailer-daemon / out-of-office / bounce), bypass OpenAI, write an unmasked alert email into `simulated_emails` (`SOP_EMPLOYEE_INBOX`) and a holding reply into `CUSTOMER_INBOX`, and set `thread_status = "ESCALATED_TO_HUMAN"`. Sender facts are checked locally: internal and automated senders get **no** holding reply (no loops, no "we received your message" to colleagues) and get no extra privileges; senders with no orders get a reply that doesn't mention an account manager, and their alert says "(no previous orders)". An auto-reply on an open thread keeps that thread's status.
 - **Path C (Return Agent):** If `intent == "return"` and `confidence >= 0.60`, invoke Phase 3.
 
 ### Phase 3: System 2 Return Specialist (`openai-agents` SDK)
@@ -58,7 +58,7 @@ Evaluate the **masked email text** in a single parallel Jev API call:
 
 - **Path C (Tech):** If `intent == "tech_support"` and `confidence >= 0.60` (and Paths A/B don't apply), invoke the `Tech Support Agent` (`gpt-4o-mini`, same `SQLiteSession(thread_id)`). Replies on a thread in `AWAITING_CUSTOMER_SCHEDULE` continue to this agent (Jev gets a static `TECH_SCHEDULING_CONTEXT`).
 - **Calendars are the source of truth.** The agent reads free/busy for an engineer who knows the part (`engineer_parts`, by priority) and the client's account manager (`orders.sop_owner_email`). It never asks the engineer about times. The engineer and the AM each get **exactly one** invite, at booking time.
-- Tools: `check_meeting_availability(part_token, requested_starts, reschedule)` (ownership check: sender must have an order of the part, else lock + `[SECURITY]` escalation; returns `AVAILABLE` or up to 3 shared open slots), `book_tech_meeting(part_token, start)` (idempotent per thread; writes `MEETING` events, mints `<LINK_TOKEN_N>`, sends the two invites), `send_tech_support_emails(...)` (unmasks tokens; `awaiting_customer=true` sets `AWAITING_CUSTOMER_SCHEDULE` and counts a round).
+- Tools: `check_meeting_availability(part_token, requested_starts, reschedule)` (ownership check: sender must have an order of the part, else lock + `[SECURITY]` escalation; a sender with no orders at all is a likely prospect and gets a normal hand-off instead, no lock; returns `AVAILABLE` or up to 3 shared open slots), `book_tech_meeting(part_token, start)` (idempotent per thread; writes `MEETING` events, mints `<LINK_TOKEN_N>`, sends the two invites), `send_tech_support_emails(...)` (unmasks tokens; `awaiting_customer=true` sets `AWAITING_CUSTOMER_SCHEDULE` and counts a round).
 - **Customer chooses:** `book_tech_meeting` only accepts a slot that the customer requested and that `check_meeting_availability` returned `AVAILABLE` in the same run; offered slots can't be booked by the agent.
 - **Rescheduling:** replies on `MEETING_CONFIRMED` threads also continue to the agent. `check_meeting_availability(..., reschedule=true)` ignores the meeting's own calendar entries and never re-offers its current time; offers set `tech_schedules.status = RESCHEDULING`. Booking then moves the meeting (same link): one `[Updated invite]` to the engineer and AM, or `[Cancelled]` + a new invite if another engineer must take over. A new email thread adopts the customer's upcoming meeting (by part, or their only one) instead of booking a duplicate. Past meetings don't count as booked.
 - **Round limit:** after 3 scheduling emails, a 4th is replaced by a human escalation to the AM plus a holding reply.

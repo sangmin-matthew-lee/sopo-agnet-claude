@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 
 Emit = Callable[[dict[str, Any]], None]
@@ -13,6 +15,7 @@ from core import db
 from core import scheduling as sch
 from core.jev_router import (
     AWAITING_INFO_CONTEXT,
+    NON_SOP,
     TECH_SCHEDULING_CONTEXT,
     JevResult,
     RouteDecision,
@@ -39,6 +42,42 @@ HOLDING_REPLY = (
     "Thank you for reaching out. Your message has been forwarded to your account manager and you manager will follow up with you as soon as possible.\n\n"
     "SOPO"
 )
+# For senders with no orders (e.g. a prospect): they have no account manager yet.
+NEW_CONTACT_REPLY = (
+    "Thank you for reaching out to AxMatt Supply. Your message has been forwarded to our team, "
+    "and someone will follow up with you as soon as possible.\n\n"
+    "SOPO"
+)
+
+# Machines: never auto-reply to these (prevents reply loops with other auto-responders).
+_AUTOMATED_LOCALPARTS = re.compile(
+    r"^(no-?reply|do-?not-?reply|mailer-daemon|postmaster|bounces?)([+._-].*)?$", re.IGNORECASE
+)
+_AUTOMATED_BODY = re.compile(
+    r"\b(out of (the )?office|auto(matic)?[- ]?reply|delivery (status notification|has failed|failure)"
+    r"|undeliverable|mail delivery failed)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class Sender:
+    """Local facts about who sent the email. Decided in Python, never by an AI model."""
+
+    email: str
+    internal: bool  # a company address: goes to a human, gets no extra privileges
+    automated: bool  # auto-reply / bounce / no-reply: no holding reply, low priority
+    has_orders: bool  # an existing customer (has an account manager)
+
+    @classmethod
+    def of(cls, email: str, clean_text: str) -> "Sender":
+        local, _, domain = email.partition("@")
+        return cls(
+            email=email,
+            internal=domain == db.COMPANY_DOMAIN,
+            automated=bool(_AUTOMATED_LOCALPARTS.match(local) or _AUTOMATED_BODY.search(clean_text)),
+            has_orders=db.customer_has_orders(email),
+        )
 
 
 class Trace:
@@ -71,26 +110,35 @@ class Trace:
 
 
 def _escalate(
-    thread_id: str, sender: str, clean_text: str, reasons: list[str], trace: Trace
+    thread_id: str,
+    sender: Sender,
+    clean_text: str,
+    reasons: list[str],
+    trace: Trace,
+    other_inquiry: bool = False,
 ) -> None:
-    """Unmasked alert to SOP AM inbox + holding reply to customer. No OpenAI call."""
+    """Unmasked alert to SOP AM inbox (+ holding reply to a human sender). No OpenAI call."""
+    if sender.internal:
+        subject = f"[INTERNAL] Message from {sender.email}"
+    elif sender.automated:
+        subject = f"[LOW PRIORITY] Automated message from {sender.email}"
+    elif other_inquiry:
+        subject = f"[ESCALATION] Other inquiry (not return/tech): {sender.email}"
+    else:
+        subject = f"[ESCALATION] Customer needs a human: {sender.email}"
+    if not sender.has_orders and not sender.internal:
+        subject += " (no previous orders)"
     sop_body = (
-        f"Escalated thread {thread_id} from {sender}.\n"
+        f"Escalated thread {thread_id} from {sender.email}.\n"
         f"Reasons: {'; '.join(reasons)}\n\n--- Customer message (unmasked) ---\n{clean_text}"
     )
-    db.insert_email(
-        thread_id,
-        SOP_EMPLOYEE_INBOX,
-        db.SOP_OWNER_EMAIL,
-        f"[ESCALATION] Customer needs a human: {sender}",
-        sop_body,
-    )
-    db.insert_email(
-        thread_id, CUSTOMER_INBOX, sender, "We've received your message", HOLDING_REPLY
-    )
-    trace.add(
-        "phase2", "Escalated to human", inboxes=[SOP_EMPLOYEE_INBOX, CUSTOMER_INBOX]
-    )
+    db.insert_email(thread_id, SOP_EMPLOYEE_INBOX, db.SOP_OWNER_EMAIL, subject, sop_body)
+    inboxes = [SOP_EMPLOYEE_INBOX]
+    if not (sender.internal or sender.automated):  # colleagues and machines get no holding reply
+        reply = HOLDING_REPLY if sender.has_orders else NEW_CONTACT_REPLY
+        db.insert_email(thread_id, CUSTOMER_INBOX, sender.email, "We've received your message", reply)
+        inboxes.append(CUSTOMER_INBOX)
+    trace.add("phase2", "Escalated to human", inboxes=inboxes, subject=subject)
 
 
 async def process_email(
@@ -121,7 +169,7 @@ async def process_email(
         ]
         trace.add("phase1", "Thread hijack attempt", reasons=reasons)
         clean = mask_text(body).clean_text
-        _escalate(thread_id, sender_email, clean, reasons, trace)
+        _escalate(thread_id, Sender.of(sender_email, clean), clean, reasons, trace)
         return {
             "status": ESCALATED_TO_HUMAN,
             "thread_status": existing["thread_status"],
@@ -147,6 +195,16 @@ async def process_email(
         vault=m.vault,
     )
     db.save_thread(thread_id, sender_email, m.vault, "PROCESSING")
+    sender = Sender.of(sender_email, m.clean_text)
+    if sender.internal or sender.automated or not sender.has_orders:
+        trace.add(
+            "phase1",
+            "Sender checked locally",
+            internal=sender.internal,
+            automated=sender.automated,
+            has_orders=sender.has_orders,
+            local_only=True,
+        )
 
     # Phase 2: Triage - Jev gatekeeper + deterministic router
     prior_status = existing["thread_status"] if existing else None
@@ -183,7 +241,11 @@ async def process_email(
         jev=jev.to_dict(),
     )
     decision: RouteDecision = route(
-        jev, awaiting_customer_info=awaiting, awaiting_tech_schedule=awaiting_tech
+        jev,
+        awaiting_customer_info=awaiting,
+        awaiting_tech_schedule=awaiting_tech,
+        internal_sender=sender.internal,
+        automated=sender.automated,
     )
     trace.add("phase2", f"Route → {decision.path}", decision=decision.to_dict())
 
@@ -193,8 +255,11 @@ async def process_email(
         return _done("BLOCKED_SPAM", thread_id, trace, decision, jev)
 
     if decision.path == "B_ESCALATE":
-        _escalate(thread_id, sender_email, m.clean_text, decision.reasons, trace)
-        db.set_thread_status(thread_id, ESCALATED_TO_HUMAN)
+        other = jev.source == "jev" and jev.intent == NON_SOP
+        _escalate(thread_id, sender, m.clean_text, decision.reasons, trace, other_inquiry=other)
+        # An auto-reply (e.g. out-of-office) on an open thread must not end that conversation.
+        keep = sender.automated and prior_status is not None and prior_status != "PROCESSING"
+        db.set_thread_status(thread_id, prior_status if keep and prior_status else ESCALATED_TO_HUMAN)
         return _done(ESCALATED_TO_HUMAN, thread_id, trace, decision, jev)
 
     # Phase 3 & 4: specialist agent + local tools
@@ -207,7 +272,7 @@ async def process_email(
         trace.add(
             "phase3", f"{agent_name} unavailable — failing closed", reasons=reasons
         )
-        _escalate(thread_id, sender_email, m.clean_text, reasons, trace)
+        _escalate(thread_id, sender, m.clean_text, reasons, trace)
         db.set_thread_status(thread_id, ESCALATED_TO_HUMAN)
         return _done(ESCALATED_TO_HUMAN, thread_id, trace, decision, jev)
 
@@ -249,7 +314,7 @@ async def process_email(
         if not ctx.locked and ctx.thread_status != ESCALATED_TO_HUMAN:
             _escalate(
                 thread_id,
-                sender_email,
+                sender,
                 m.clean_text,
                 [f"agent error: {type(exc).__name__}"],
                 trace,
@@ -264,7 +329,7 @@ async def process_email(
     if status is None:
         _escalate(
             thread_id,
-            sender_email,
+            sender,
             m.clean_text,
             [f"{agent_name} took no action"],
             trace,

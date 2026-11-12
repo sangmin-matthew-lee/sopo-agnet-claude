@@ -195,6 +195,63 @@ def test_scenario_5_spam_blocked(client, stub):
     assert db.load_thread("th-1")["thread_status"] == "BLOCKED_SPAM"
 
 
+# ------------------------------------------- hand-offs instead of blocking
+
+def test_prospect_purchase_inquiry_goes_to_sop(client, stub):
+    """A brand-new company asking to buy: never blocked, SOP is told it has no orders, no OpenAI."""
+    stub["jev"] = jev(intent="non_sop", conf=0.9)
+    out = send(client, "Hi, we're a new company interested in buying 50 AB-1234 controllers. Can we get a quote?",
+               sender="buyer@newprospect.com")
+    assert out["status"] == "ESCALATED_TO_HUMAN" and out["route"] == "B_ESCALATE"
+    assert stub["models"] == []
+    sop = inbox("SOP_EMPLOYEE_INBOX")[0]
+    assert sop["subject"].startswith("[ESCALATION] Other inquiry") and "(no previous orders)" in sop["subject"]
+    reply = inbox("CUSTOMER_INBOX")[0]
+    assert reply["recipient_email"] == "buyer@newprospect.com" and "our team" in reply["body"]
+    assert "account manager" not in reply["body"]
+
+
+def test_existing_customer_other_inquiry_keeps_account_manager_reply(client, stub):
+    stub["jev"] = jev(intent="non_sop", conf=0.9)
+    send(client, "Could you send me a quote for 10 more AB-1234 units?")
+    assert "(no previous orders)" not in inbox("SOP_EMPLOYEE_INBOX")[0]["subject"]
+    assert "account manager" in inbox("CUSTOMER_INBOX")[0]["body"]
+
+
+def test_internal_sender_goes_to_sop_without_holding_reply(client, stub):
+    stub["jev"] = jev(intent="return", conf=0.95)  # even if it looks like a return request
+    out = send(client, "FYI: customer called about returning AB-1234 from ORD-9988, can someone check?",
+               sender="priya.patel@axmattsupply.com")
+    assert out["status"] == "ESCALATED_TO_HUMAN" and stub["models"] == []
+    assert inbox("SOP_EMPLOYEE_INBOX")[0]["subject"].startswith("[INTERNAL]")
+    assert inbox("CUSTOMER_INBOX") == []  # no "we received your message" to a colleague
+    assert db.find_order("ORD-9988", "AB-1234")["return_label"] is None
+
+
+def test_auto_reply_gets_no_reply_and_keeps_the_open_thread(client, stub):
+    stub["jev"] = jev(intent="return", conf=0.95)
+    stub["scripts"] = [[("tool", "send_return_emails", {"customer_subject": "Order number?",
+                         "customer_body": "Which order is this from?", "sop_summary": "",
+                         "request_missing_info": True}), ("text", "asked")]]
+    send(client, "I need to return part AB-1234.", thread="th-r", msg="m-1")
+    assert db.load_thread("th-r")["thread_status"] == "AWAITING_CUSTOMER_INFO"
+    before = len(inbox("CUSTOMER_INBOX"))
+
+    stub["jev"] = jev(intent="non_sop", conf=0.9)
+    out = send(client, "Automatic reply: I am out of the office until Monday.", thread="th-r", msg="m-2")
+    assert out["status"] == "ESCALATED_TO_HUMAN"
+    assert inbox("SOP_EMPLOYEE_INBOX")[-1]["subject"].startswith("[LOW PRIORITY]")
+    assert len(inbox("CUSTOMER_INBOX")) == before  # never auto-reply to an auto-reply
+    assert db.load_thread("th-r")["thread_status"] == "AWAITING_CUSTOMER_INFO"  # the real reply can still continue
+
+
+def test_noreply_sender_gets_no_holding_reply(client, stub):
+    stub["jev"] = jev(intent="non_sop", conf=0.9)
+    send(client, "Your invoice #123 is ready.", sender="no-reply@billing-vendor.com")
+    assert inbox("SOP_EMPLOYEE_INBOX")[0]["subject"].startswith("[LOW PRIORITY]")
+    assert inbox("CUSTOMER_INBOX") == []
+
+
 # ------------------------------------------------------------- edge cases
 
 def test_duplicate_message_id_aborts(client, stub):

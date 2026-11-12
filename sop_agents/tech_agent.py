@@ -45,6 +45,12 @@ HOLDING_REPLY = (
     "who will follow up with you personally to arrange the technical session.\n\n"
     "Sales Operations Team"
 )
+# For a sender with no orders (e.g. a prospect asking about a product): no account manager yet.
+NEW_CONTACT_REPLY = (
+    "Thank you for reaching out to AxMatt Supply. Your request has been forwarded to our team, "
+    "who will follow up with you as soon as possible.\n\n"
+    "Sales Operations Team"
+)
 
 
 @dataclass
@@ -87,7 +93,12 @@ def _schedule(ctx: TechSupportContext, **fields: Any) -> dict[str, Any]:
 
 
 def _escalate(
-    ctx: TechSupportContext, recipient: str, subject: str, body: str, lock: bool = False
+    ctx: TechSupportContext,
+    recipient: str,
+    subject: str,
+    body: str,
+    lock: bool = False,
+    reply: str = HOLDING_REPLY,
 ) -> None:
     """Hand the thread to a human: internal alert + holding reply. No engineer is contacted."""
     ctx.locked = ctx.locked or lock
@@ -98,7 +109,7 @@ def _escalate(
         CUSTOMER_INBOX,
         ctx.customer_email,
         "We've received your technical support request",
-        HOLDING_REPLY,
+        reply,
     )
     _schedule(ctx, status="ESCALATED")
 
@@ -381,6 +392,27 @@ def _reject_unowned(ctx: TechSupportContext, part: str, part_token: str) -> str:
         part_number=part,
         local_only=True,
     )
+    if not db.customer_has_orders(ctx.customer_email, ctx.db_path):
+        # Never ordered anything: most likely a prospect asking about a product. A normal hand-off,
+        # not a security event (no lock). Existing customers asking about a part they didn't buy
+        # still get the [SECURITY] path below.
+        _escalate(
+            ctx,
+            db.SOP_OWNER_EMAIL,
+            f"[ESCALATION] Tech question from a sender with no previous orders ({part})",
+            (
+                f"{ctx.customer_email} asked for an engineering meeting about {part} but has never ordered "
+                f"from us (possible new customer).\n\nNo engineer was contacted and nothing was booked. "
+                f"Thread: {ctx.thread_id}.\n\n--- Customer message ---\n{ctx.customer_message}"
+            ),
+            reply=NEW_CONTACT_REPLY,
+        )
+        return _result(
+            ctx,
+            "check_meeting_availability",
+            f"ESCALATED: the sender has no orders with us, so {part_token} support was handed to the SOP team "
+            "and the customer was already notified. Do not send any further emails; just stop.",
+        )
     _escalate(
         ctx,
         db.SOP_OWNER_EMAIL,

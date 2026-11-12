@@ -110,6 +110,18 @@ def test_sender_not_owner_is_rejected_and_escalated(db_path):
 
 # --------------------------------------------------------- booking tool
 
+def test_prospect_with_no_orders_is_handed_off_not_flagged(db_path):
+    """Someone who never ordered asking about a product is a possible customer, not an attacker."""
+    ctx = ctx_for(db_path, email="buyer@newprospect.com")
+    out = check_meeting_availability_impl(ctx, "<PART_TOKEN_1>", [])
+    assert out.startswith("ESCALATED") and not contains_raw_pii(out)
+    assert ctx.thread_status == "ESCALATED_TO_HUMAN" and not ctx.locked
+    sop = inbox(db_path, "SOP_EMPLOYEE_INBOX")[0]
+    assert "[SECURITY]" not in sop["subject"] and "no previous orders" in sop["subject"]
+    assert "our team" in inbox(db_path, "CUSTOMER_INBOX")[0]["body"]
+    assert inbox(db_path, ENGINEER_INBOX) == []
+
+
 def test_book_before_check_is_blocked(db_path):
     out = book_tech_meeting_impl(ctx_for(db_path), "<PART_TOKEN_1>", slots(db_path)["free_slot"]["iso"])
     assert out.startswith("BLOCKED") and db.list_emails(db_path) == []

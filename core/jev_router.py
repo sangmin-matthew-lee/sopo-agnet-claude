@@ -37,7 +37,10 @@ QUESTIONS: dict[str, Any] = {
             "tech_support": "Customer reports a technical defect and needs engineering troubleshooting or a meeting.",
             "refund": "Customer is requesting a financial refund, credit, or billing dispute review.",
             "human_needed": "Customer explicitly demands a human manager or has an ambiguous account issue.",
-            "non_sop": "Unrelated to returns, tech support, or refunds.",
+            "non_sop": (
+                "Any other legitimate business email that is not spam: buying or quote requests, "
+                "account or billing questions, messages from colleagues or other departments, general questions."
+            ),
         },
     },
     "frustration_level": {
@@ -50,6 +53,8 @@ QUESTIONS: dict[str, Any] = {
         ],
     },
 }
+
+NON_SOP = "non_sop"  # "other business": routed to a human, never blocked on its own
 
 Path = Literal["A_BLOCK", "B_ESCALATE", "C_RETURN_AGENT", "C_TECH_AGENT"]
 
@@ -189,12 +194,22 @@ def route(
     result: JevResult,
     awaiting_customer_info: bool = False,
     awaiting_tech_schedule: bool = False,
+    internal_sender: bool = False,
+    automated: bool = False,
 ) -> RouteDecision:
     """Deterministic routing. Order matters: Block > Escalate > Return / Tech Support Agent.
 
     `awaiting_customer_info`: the thread is an open return where agent asked the customer for a missing order/part number. A calm, non-spam reply there continues the return even if Jev reads the bare reply as non_sop or with low confidence.
 
     `awaiting_tech_schedule`: same, for a tech-support thread waiting on a time or part number.
+
+    `internal_sender`: the sender is a company address. The agents assume an external customer, so
+    anything that isn't spam goes to a human; internal senders get no extra privileges.
+
+    `automated`: an auto-reply / bounce / no-reply sender. Never fed to an agent; a human skims it.
+
+    Only spam/injection is blocked. Anything else that isn't a return or tech support request
+    (`non_sop`, refund, human_needed, low confidence) goes to a human rather than being dropped.
     """
     calm = (
         result.source == "jev"
@@ -206,6 +221,13 @@ def route(
         f"spam={result.spam_probability:.2f} < {SPAM_THRESHOLD}, "
         f"frustration={result.frustration_level:.2f} < {FRUSTRATION_THRESHOLD}"
     )
+    if (internal_sender or automated) and result.spam_probability < SPAM_THRESHOLD:
+        why = (
+            "internal sender: forwarded to SOP, not handled by an agent"
+            if internal_sender
+            else "automated message (auto-reply / bounce / no-reply): low priority for SOP"
+        )
+        return RouteDecision("B_ESCALATE", "ESCALATED_TO_HUMAN", [why, detail])
     if awaiting_customer_info and calm and result.intent in ("return", "non_sop"):
         return RouteDecision(
             "C_RETURN_AGENT", None, ["reply on a thread AWAITING_CUSTOMER_INFO", detail]
@@ -220,16 +242,13 @@ def route(
             ],
         )
 
-    # Path A — Block
-    block = []
+    # Path A — Block (spam / prompt injection only)
     if result.spam_probability >= SPAM_THRESHOLD:
-        block.append(
-            f"is_spam_or_injection={result.spam_probability:.2f} >= {SPAM_THRESHOLD}"
+        return RouteDecision(
+            "A_BLOCK",
+            "BLOCKED_SPAM",
+            [f"is_spam_or_injection={result.spam_probability:.2f} >= {SPAM_THRESHOLD}"],
         )
-    if result.intent == "non_sop":
-        block.append("intent == non_sop")
-    if block:
-        return RouteDecision("A_BLOCK", "BLOCKED_SPAM", block)
 
     # Path B — Human escalation
     esc = []
@@ -241,6 +260,8 @@ def route(
         )
     if result.intent == "human_needed":
         esc.append("intent == human_needed")
+    if result.intent == NON_SOP:
+        esc.append(f"intent == {NON_SOP}: not a return or tech support request, handed to SOP")
     if result.intent_confidence < INTENT_CONFIDENCE_THRESHOLD:
         esc.append(
             f"intent.confidence={result.intent_confidence:.2f} < {INTENT_CONFIDENCE_THRESHOLD}"

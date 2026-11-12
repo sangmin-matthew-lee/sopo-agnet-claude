@@ -464,6 +464,18 @@ def find_orders_by_part_for_customer(
     return [dict(r) for r in rows]
 
 
+def customer_has_orders(customer_email: str, db_path: str | None = None) -> bool:
+    """True if this sender has ever ordered from us (an existing customer with an account manager)."""
+    with get_conn(db_path) as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM orders WHERE lower(customer_email) = lower(?) LIMIT 1",
+                (customer_email,),
+            ).fetchone()
+            is not None
+        )
+
+
 def part_exists(part_number: str, db_path: str | None = None) -> bool:
     with get_conn(db_path) as conn:
         return (
