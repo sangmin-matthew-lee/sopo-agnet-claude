@@ -34,6 +34,7 @@ from sop_agents.return_agent import (
 )
 from sop_agents.tech_agent import (
     AWAITING_CUSTOMER_SCHEDULE,
+    ENGINEER_INBOX,
     MEETING_CONFIRMED,
     TechSupportContext,
     run_tech_agent,
@@ -143,6 +144,23 @@ def _escalate(
     trace.add("phase2", "Escalated to human", inboxes=inboxes, subject=subject)
 
 
+def _forward_to_staff(thread_id: str, sender_email: str, clean_text: str, roles: str | None, trace: Trace) -> None:
+    """The customer replied on a thread a person is handling: forward it to the AM and any engineer who replied."""
+    staff = db.thread_staff(thread_id)
+    subject = f"[HUMAN] Customer replied: {sender_email}"
+    body = (
+        f"{sender_email} replied on thread {thread_id}, which you are handling (the agent is paused).\n"
+        "Reply from the dashboard, or hand the thread back to the agent.\n\n"
+        f"--- Customer message ---\n{clean_text}"
+    )
+    inboxes = [SOP_EMPLOYEE_INBOX]
+    mail.send(thread_id, SOP_EMPLOYEE_INBOX, staff["AM"], subject, body, best_effort=True)
+    if "ENGINEER" in (roles or "").split(","):
+        mail.send(thread_id, ENGINEER_INBOX, staff["ENGINEER"], subject, body, best_effort=True)
+        inboxes.append(ENGINEER_INBOX)
+    trace.add("phase1", "Thread is handled by a person — forwarded, agent not called", inboxes=inboxes)
+
+
 async def process_email(
     sender_email: str,
     thread_id: str,
@@ -213,6 +231,12 @@ async def _process(
         new_tokens=m.new_tokens,
         vault=m.vault,
     )
+    if existing and existing["thread_status"] == db.HUMAN_HANDLING:
+        # A person took this thread over: no Jev, no agent, no auto-reply. Forward it to them.
+        db.save_thread(thread_id, sender_email, m.vault, db.HUMAN_HANDLING, source=source)
+        _forward_to_staff(thread_id, sender_email, m.clean_text, existing["human_roles"], trace)
+        return {"status": db.HUMAN_HANDLING, "thread_status": db.HUMAN_HANDLING, "thread_id": thread_id,
+                "route": None, "jev_source": None, "trace": trace.steps}
     db.save_thread(thread_id, sender_email, m.vault, "PROCESSING", source=source)
     sender = Sender.of(sender_email, m.clean_text)
     if db.thread_source(thread_id) == db.LIVE_SOURCE and not usage.can_send():

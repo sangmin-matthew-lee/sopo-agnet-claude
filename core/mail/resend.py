@@ -15,7 +15,7 @@ import uuid
 
 from core import db
 from core.mail import resend_api, threads, usage
-from core.mail.base import BLOCKED_QUOTA, FAILED, SENT, OutboundEmail, SendResult
+from core.mail.base import AGENT, BLOCKED_QUOTA, FAILED, SENT, OutboundEmail, SendResult
 from core.mail.config import LiveConfig
 
 log = logging.getLogger("sopo.mail")
@@ -40,7 +40,8 @@ class ResendTransport:
 
         if email.inbox_type == CUSTOMER_INBOX:
             to = email.recipient
-            sender = f"AxMatt Supply Support <{cfg.support_address}>"
+            name = "AxMatt Supply Support" if email.author == AGENT else f"{email.author} via AxMatt Supply"
+            sender = f"{name} <{cfg.support_address}>"
             reply, original = threads.reply_headers(email.thread_id, db_path)
             headers.update(reply)
             headers["Auto-Submitted"] = "auto-replied"  # RFC 3834: other auto-responders must not answer

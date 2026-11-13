@@ -136,12 +136,14 @@
             function setHtml(el, html, sig = html) {
                 if (el.dataset.sig === sig) return;
                 const open = new Set([...el.querySelectorAll("details[data-key]")].map((d) => d.dataset.key + "|" + d.open));
+                const typed = new Map([...el.querySelectorAll("textarea[data-key]")].map((t) => [t.dataset.key, t.value]));
                 el.innerHTML = html;
                 el.dataset.sig = sig;
                 el.querySelectorAll("details[data-key]").forEach((d) => {
                     if (open.has(d.dataset.key + "|true")) d.open = true;
                     else if (open.has(d.dataset.key + "|false")) d.open = false;
                 });
+                el.querySelectorAll("textarea[data-key]").forEach((t) => (t.value = typed.get(t.dataset.key) || ""));
             }
 
             function toast(msg) {
@@ -221,6 +223,7 @@
                 RETURN_DENIED: "bg-rose-100 text-rose-800",
                 BLOCKED_SPAM: "bg-rose-100 text-rose-800",
                 PROCESSING: "bg-slate-100 text-slate-700",
+                HUMAN_HANDLING: "bg-violet-100 text-violet-800",
                 SENT: "bg-emerald-100 text-emerald-800",
                 BLOCKED_QUOTA: "bg-rose-100 text-rose-800",
                 FAILED: "bg-rose-100 text-rose-800",
@@ -304,6 +307,63 @@
                   </details>`;
             }
 
+            // One card per thread: what reached this inbox, then a reply box (the person takes over the thread).
+            function threadCard(t, mails, role) {
+                const human = t.thread_status === "HUMAN_HANDLING";
+                const name = t.staff[role];
+                const key = `reply-${t.thread_id}-${role}`;
+                return `<div class="border rounded-lg p-2 space-y-2">
+                    <div class="flex justify-between items-center text-xs"><span class="font-mono">${esc(t.thread_id)}</span>${pill(t.thread_status)}</div>
+                    ${human ? `<p class="text-[12px] text-violet-800 bg-violet-50 rounded px-2 py-1">👤 사람이 처리 중: 에이전트는 이 스레드에 답하지 않습니다.</p>` : ""}
+                    ${mails.map((m) => mailCard(m, "실제로 수신된 메일", `in-${m.id}`)).join("")}
+                    <textarea data-key="${esc(key)}" id="${esc(key)}" rows="3" class="w-full border rounded p-2 text-[13px]"
+                      placeholder="${esc(name)}(으)로 고객에게 답장 (같은 메일 스레드로 갑니다)"></textarea>
+                    <div class="flex gap-2">
+                      <button data-reply="${esc(t.thread_id)}" data-role="${role}" data-box="${esc(key)}"
+                        class="flex-1 bg-emerald-600 text-white rounded py-1.5 text-xs">${esc(name)}(으)로 답장</button>
+                      ${human ? `<button data-resume="${esc(t.thread_id)}" class="flex-1 bg-slate-700 text-white rounded py-1.5 text-xs">에이전트에게 다시 맡기기</button>` : ""}
+                    </div>
+                  </div>`;
+            }
+
+            async function post(path, body) {
+                const res = await fetch(path, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body || {}),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) toast(typeof data.detail === "string" ? data.detail : "요청을 처리할 수 없습니다.");
+                return res.ok;
+            }
+
+            document.addEventListener("click", async (e) => {
+                const reply = e.target.closest("[data-reply]");
+                const resume = e.target.closest("[data-resume]");
+                if (!reply && !resume) return;
+                const btn = reply || resume;
+                btn.disabled = true;
+                try {
+                    if (reply) {
+                        const box = $(reply.dataset.box);
+                        if (!box.value.trim()) return toast("답장 내용을 입력하세요.");
+                        const ok = await post(`/t/${token}/threads/${encodeURIComponent(reply.dataset.reply)}/reply`, {
+                            role: reply.dataset.role,
+                            body: box.value,
+                        });
+                        if (ok) {
+                            box.value = "";
+                            toast("");
+                        }
+                    } else {
+                        await post(`/t/${token}/threads/${encodeURIComponent(resume.dataset.resume)}/resume`);
+                    }
+                    await refresh();
+                } finally {
+                    btn.disabled = false;
+                }
+            });
+
             function renderTab() {
                 document.querySelectorAll(".tab").forEach((b) => {
                     const on = b.dataset.tab === tab;
@@ -316,16 +376,20 @@
                 const empty = (t) => `<p class="text-xs text-slate-400">${t}</p>`;
                 let html = "";
                 if (tab === "am" || tab === "eng") {
+                    const role = tab === "am" ? "AM" : "ENGINEER";
                     const list = tab === "am" ? state.am_inbox : state.engineer_inbox;
-                    html = list.length
-                        ? list.map((m) => mailCard(m, `스레드 ${esc(m.thread_id)} · 실제로 수신된 메일`, `in-${m.id}`)).join("")
+                    const groups = state.threads
+                        .map((t) => ({ t, mails: list.filter((m) => m.thread_id === t.thread_id) }))
+                        .filter((g) => g.mails.length || g.t.thread_status === "HUMAN_HANDLING");
+                    html = groups.length
+                        ? groups.map(({ t, mails }) => threadCard(t, mails, role)).join("")
                         : empty(tab === "am"
                             ? "아직 AM에게 간 메일이 없습니다. (에스컬레이션·반품 요약·미팅 초대가 여기에 옵니다)"
                             : "아직 엔지니어에게 간 메일이 없습니다. (미팅이 예약되면 초대장이 옵니다)");
                 } else if (tab === "sent") {
                     html = state.sent_log.length
                         ? state.sent_log
-                              .map((m) => mailCard(m, `${pill(m.status)} ${esc(m.inbox_type)} → ${esc(m.delivered_to || "")}`, `out-${m.id}`))
+                              .map((m) => mailCard(m, `${pill(m.status)} ${esc(m.inbox_type)} → ${esc(m.delivered_to || "")}${m.author !== "agent" ? ` · ✍️ ${esc(m.author)}` : ""}`, `out-${m.id}`))
                               .join("")
                         : empty("아직 보낸 메일이 없습니다.");
                 } else {
@@ -397,13 +461,7 @@
             async function createOrder(delivered, btn) {
                 btn.disabled = true;
                 try {
-                    const res = await fetch(`/t/${token}/orders`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ delivered }),
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok) toast(typeof data.detail === "string" ? data.detail : "주문을 만들 수 없습니다.");
+                    await post(`/t/${token}/orders`, { delivered });
                     await refresh();
                 } finally {
                     btn.disabled = false;

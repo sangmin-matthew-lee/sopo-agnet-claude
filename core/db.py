@@ -524,6 +524,61 @@ def set_thread_status(
         )
 
 
+HUMAN_HANDLING = "HUMAN_HANDLING"  # a person replied from the tester dashboard; the agent stays quiet
+
+
+def pause_thread(thread_id: str, role: str, db_path: str | None = None) -> None:
+    """A person (AM / ENGINEER) took over: remember the status to restore and who is involved."""
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT thread_status, paused_from, human_roles FROM thread_vaults WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+        if row is None:
+            return
+        paused = row["thread_status"] != HUMAN_HANDLING
+        roles = sorted({*(row["human_roles"] or "").split(","), role} - {""})
+        conn.execute(
+            "UPDATE thread_vaults SET thread_status = ?, paused_from = ?, human_roles = ?, updated_at = ? "
+            "WHERE thread_id = ?",
+            (HUMAN_HANDLING, row["thread_status"] if paused else row["paused_from"], ",".join(roles),
+             now_iso(), thread_id),
+        )
+
+
+def resume_thread(thread_id: str, db_path: str | None = None) -> str:
+    """Hand the thread back to the agent. Returns the restored status."""
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT paused_from FROM thread_vaults WHERE thread_id = ?", (thread_id,)).fetchone()
+        status = row["paused_from"] if row and row["paused_from"] not in (None, "PROCESSING") else "REPLIED"
+        conn.execute(
+            "UPDATE thread_vaults SET thread_status = ?, paused_from = NULL, human_roles = NULL, updated_at = ? "
+            "WHERE thread_id = ?",
+            (status, now_iso(), thread_id),
+        )
+    return status
+
+
+def thread_staff(thread_id: str, db_path: str | None = None) -> dict[str, str]:
+    """{"AM": email, "ENGINEER": email} for a thread: the booked meeting's people, else the account manager
+    of the customer's order (the one named in the thread, if any) and the first engineer for its part."""
+    thread = load_thread(thread_id, db_path) or {"customer_email": "", "vault": {}}
+    meeting = get_tech_schedule(thread_id, db_path) or {}
+    named = set(thread["vault"].values())
+    with get_conn(db_path) as conn:
+        orders = conn.execute(
+            "SELECT order_id, part_number, sop_owner_email FROM orders WHERE lower(customer_email) = lower(?) "
+            "ORDER BY delivered_at DESC",
+            (thread["customer_email"],),
+        ).fetchall()
+    order = next((o for o in orders if o["order_id"] in named or o["part_number"] in named),
+                 orders[0] if orders else None)
+    engineers = engineers_for_part(order["part_number"], db_path) if order else []
+    return {
+        "AM": meeting.get("am_email") or (order["sop_owner_email"] if order else SOP_OWNER_EMAIL),
+        "ENGINEER": meeting.get("engineer_email") or (engineers[0] if engineers else ENG_ALEX),
+    }
+
+
 # -------------------------------------------------------------------- orders
 
 

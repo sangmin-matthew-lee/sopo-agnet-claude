@@ -6,6 +6,7 @@ random (256 bits) and only its sha256 is stored.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -19,9 +20,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from core import db
+from core import db, mail
 from core.mail import usage
 from core.mail.config import LiveConfig
+from core.mail.resend import CUSTOMER_INBOX
 from core.masker import ORDER_RE, PART_RE
 from core.ratelimit import client_ip, register_limiter, tester_limiter
 
@@ -132,6 +134,49 @@ async def create_order(order: NewOrder, tester: dict[str, Any] = Depends(current
             "returnable": days <= 30, "purchased_qty": 2}
 
 
+# --------------------------------------------------- staff replies and hand-back
+
+ROLE_TITLES = {"AM": "Account Manager", "ENGINEER": "Engineer"}
+
+
+class StaffReply(BaseModel):
+    role: Literal["AM", "ENGINEER"]
+    body: str = Field(min_length=1, max_length=5000)
+
+
+def _own_thread(tester: dict[str, Any], thread_id: str) -> dict[str, Any]:
+    thread = db.load_thread(thread_id)
+    if (thread is None or thread["source"] != db.LIVE_SOURCE
+            or thread["customer_email"].lower() != tester["email"].lower()):
+        raise HTTPException(404, "Not found.")
+    return thread
+
+
+@router.post("/t/{token}/threads/{thread_id}/reply")
+async def staff_reply(thread_id: str, reply: StaffReply,
+                      tester: dict[str, Any] = Depends(current_tester)) -> dict[str, Any]:
+    """The AM or engineer answers the customer in the customer's own thread; the agent then stays quiet."""
+    thread = _own_thread(tester, thread_id)
+    name = db.staff_name(db.thread_staff(thread_id)[reply.role])
+    title = ROLE_TITLES[reply.role]
+    body = f"{reply.body.strip()}\n\n{name}\n{title}, AxMatt Supply"
+    try:
+        await asyncio.to_thread(mail.send, thread_id, CUSTOMER_INBOX, thread["customer_email"],
+                                "Reply from AxMatt Supply", body, author=f"{name} ({title})")
+    except mail.MailNotSent as exc:
+        raise HTTPException(503, f"Not sent ({exc.result.status}). Check the email quota.") from None
+    db.pause_thread(thread_id, reply.role)
+    return {"thread_status": db.HUMAN_HANDLING, "author": f"{name} ({title})"}
+
+
+@router.post("/t/{token}/threads/{thread_id}/resume")
+async def hand_back(thread_id: str, tester: dict[str, Any] = Depends(current_tester)) -> dict[str, Any]:
+    """'Hand back to agent': restore the status the thread had before a person took over."""
+    if _own_thread(tester, thread_id)["thread_status"] != db.HUMAN_HANDLING:
+        raise HTTPException(409, "This thread is not handled by a person.")
+    return {"thread_status": db.resume_thread(thread_id)}
+
+
 # ----------------------------------------------------------------------- state
 
 
@@ -144,14 +189,14 @@ def tester_state(tester: dict[str, Any]) -> dict[str, Any]:
     cfg = LiveConfig.from_env()
     with db.get_conn() as conn:
         threads = _rows(conn,
-                        "SELECT thread_id, thread_status, updated_at FROM thread_vaults "
+                        "SELECT thread_id, thread_status, human_roles, updated_at FROM thread_vaults "
                         "WHERE source = 'live' AND lower(customer_email) = lower(?) ORDER BY updated_at DESC",
                         (tester["email"],))
         ids = tuple(t["thread_id"] for t in threads)
         marks = ",".join("?" * len(ids)) or "NULL"
         orders = _rows(conn, "SELECT order_id, part_number, purchased_qty, status, delivered_at, return_label "
                              "FROM orders WHERE tester_id = ? ORDER BY delivered_at DESC", (tester["id"],))
-        sent = _rows(conn, "SELECT id, thread_id, inbox_type, delivered_to, subject, body, status, created_at "
+        sent = _rows(conn, "SELECT id, thread_id, inbox_type, delivered_to, subject, body, status, author, created_at "
                            f"FROM simulated_emails WHERE source = 'live' AND thread_id IN ({marks}) ORDER BY id DESC",
                      ids)
         internal = _rows(conn, "SELECT id, role, thread_id, subject, body, received_at FROM internal_inbox "
@@ -162,6 +207,8 @@ def tester_state(tester: dict[str, Any]) -> dict[str, Any]:
                                f"WHERE thread_id IN ({marks})", ids)
     for t in traces:
         t["trace"] = json.loads(t.pop("trace_json"))
+    for t in threads:  # who would answer from the AM / engineer tab
+        t["staff"] = {role: db.staff_name(email) for role, email in db.thread_staff(t["thread_id"]).items()}
     return {
         "tester": {"email": tester["email"], "since": tester["created_at"]},
         "support_address": cfg.support_address,

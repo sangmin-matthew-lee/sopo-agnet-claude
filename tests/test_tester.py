@@ -9,6 +9,7 @@ import main
 import pipeline
 from core import db
 from core.jev_router import parse_response
+from core.mail import threads
 from core.masker import mask_text
 from core.ratelimit import register_limiter, tester_limiter
 
@@ -234,3 +235,76 @@ def test_pages_are_served(client):
     page = client.get(f"/t/{token}")
     assert page.status_code == 200
     assert '<meta name="referrer" content="no-referrer"' in page.text  # the token never leaks as a Referer
+
+
+# ------------------------------------------------------- staff reply / hand-back
+
+
+def _thread_with_order(client, email="a@gmail.com", status="RETURN_LABEL_ISSUED"):
+    token = token_of(register(client, email))
+    order = client.post(f"/t/{token}/orders", json={"delivered": "10d"}).json()
+    db.save_thread("live-1", email, {"<ORDER_TOKEN_1>": order["order_id"]}, status, source="live")
+    threads.remember("<c1@gmail.com>", "live-1", threads.IN, "Return request", sender=email, body="Return it please")
+    return token, order
+
+
+def test_staff_reply_lands_in_the_customer_thread_and_pauses_the_agent(client, resend):
+    token, _ = _thread_with_order(client)
+    r = client.post(f"/t/{token}/threads/live-1/reply", json={"role": "AM", "body": "I'll call you today."})
+    assert r.status_code == 200 and r.json()["author"] == "Sarah Kim (Account Manager)"
+    [sent] = resend.sent()
+    assert sent["to"] == ["a@gmail.com"] and sent["subject"] == "Re: Return request"
+    assert sent["headers"]["In-Reply-To"] == "<c1@gmail.com>"
+    assert sent["from"] == "Sarah Kim (Account Manager) via AxMatt Supply <support@test.example.com>"
+    assert sent["text"].startswith("I'll call you today.") and "Sarah Kim\nAccount Manager" in sent["text"]
+
+    thread = db.load_thread("live-1")
+    assert thread["thread_status"] == "HUMAN_HANDLING" and thread["paused_from"] == "RETURN_LABEL_ISSUED"
+    state = client.get(f"/t/{token}/state").json()
+    assert state["threads"][0]["staff"] == {"AM": "Sarah Kim", "ENGINEER": "Alex Chen"}
+    assert state["sent_log"][0]["author"] == "Sarah Kim (Account Manager)"
+
+
+def test_hand_back_restores_the_previous_status(client, resend):
+    token, _ = _thread_with_order(client, status="MEETING_CONFIRMED")
+    assert client.post(f"/t/{token}/threads/live-1/resume").status_code == 409  # not paused yet
+    client.post(f"/t/{token}/threads/live-1/reply", json={"role": "ENGINEER", "body": "On it."})
+    client.post(f"/t/{token}/threads/live-1/reply", json={"role": "AM", "body": "Me too."})
+    assert db.load_thread("live-1")["human_roles"] == "AM,ENGINEER"
+    assert db.load_thread("live-1")["paused_from"] == "MEETING_CONFIRMED"  # not overwritten by the 2nd reply
+    assert client.post(f"/t/{token}/threads/live-1/resume").json() == {"thread_status": "MEETING_CONFIRMED"}
+    thread = db.load_thread("live-1")
+    assert thread["paused_from"] is None and thread["human_roles"] is None
+
+
+def test_staff_reply_only_on_your_own_live_thread(client, resend):
+    _thread_with_order(client)
+    other = token_of(register(client, "b@gmail.com"))
+    db.save_thread("sim-1", "b@gmail.com", {}, "DONE")  # a sandbox thread
+    for thread in ("live-1", "sim-1", "nope"):
+        assert client.post(f"/t/{other}/threads/{thread}/reply", json={"role": "AM", "body": "x"}).status_code == 404
+        assert client.post(f"/t/{other}/threads/{thread}/resume").status_code == 404
+    assert resend.sent() == [] and db.load_thread("live-1")["thread_status"] == "RETURN_LABEL_ISSUED"
+
+
+def test_staff_reply_not_sent_keeps_the_agent_on(client, resend, monkeypatch):
+    token, _ = _thread_with_order(client)
+    resend.send_status = 500
+    r = client.post(f"/t/{token}/threads/live-1/reply", json={"role": "AM", "body": "x"})
+    assert r.status_code == 503 and db.load_thread("live-1")["thread_status"] == "RETURN_LABEL_ISSUED"
+
+
+async def test_customer_mail_on_a_paused_thread_goes_to_the_people_not_the_agent(client, resend, monkeypatch):
+    async def boom(*a, **kw):
+        raise AssertionError("Jev must not be called")
+
+    monkeypatch.setattr(pipeline, "classify", boom)
+    token, _ = _thread_with_order(client)
+    client.post(f"/t/{token}/threads/live-1/reply", json={"role": "ENGINEER", "body": "Send me a photo."})
+    before = len(resend.sent())
+    result = await pipeline.process_email("a@gmail.com", "live-1", "<c2@gmail.com>", "Here is the photo.",
+                                          source="live")
+    assert result["status"] == "HUMAN_HANDLING" and db.load_thread("live-1")["thread_status"] == "HUMAN_HANDLING"
+    new = resend.sent()[before:]
+    assert sorted(m["to"][0].split("<")[1] for m in new) == ["am@test.example.com>", "eng@test.example.com>"]
+    assert all(m["subject"].startswith("[HUMAN]") and "Here is the photo." in m["text"] for m in new)
