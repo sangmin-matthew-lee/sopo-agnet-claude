@@ -103,7 +103,6 @@ def _escalate(
     """Hand the thread to a human: internal alert + holding reply. No engineer is contacted."""
     ctx.locked = ctx.locked or lock
     ctx.thread_status = ESCALATED_TO_HUMAN
-    _send(ctx, SOP_EMPLOYEE_INBOX, recipient, subject, body)
     _send(
         ctx,
         CUSTOMER_INBOX,
@@ -111,6 +110,7 @@ def _escalate(
         "We've received your technical support request",
         reply,
     )
+    _send(ctx, SOP_EMPLOYEE_INBOX, recipient, subject, body)  # after the reply, so a live copy quotes it
     _schedule(ctx, status="ESCALATED")
 
 

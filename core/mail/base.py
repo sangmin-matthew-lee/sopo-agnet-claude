@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol
 
 # Values of simulated_emails.status (the "sent log").
@@ -12,6 +12,16 @@ BLOCKED_QUOTA = "BLOCKED_QUOTA"  # not sent: today's / this month's email quota 
 FAILED = "FAILED"  # Resend rejected it or was unreachable
 
 
+AGENT = "agent"
+
+
+@dataclass(frozen=True)
+class Attachment:
+    filename: str
+    content_type: str
+    data: bytes
+
+
 @dataclass(frozen=True)
 class OutboundEmail:
     thread_id: str
@@ -19,15 +29,14 @@ class OutboundEmail:
     recipient: str  # the real (DB) address; a transport may deliver it elsewhere
     subject: str
     body: str
-    headers: dict[str, str] = field(default_factory=dict)
+    author: str = AGENT  # who wrote it: the agent, or a person replying from the tester dashboard
+    attachments: tuple[Attachment, ...] = ()
 
 
 @dataclass(frozen=True)
 class SendResult:
     log_id: int  # simulated_emails.id
     status: str
-    provider_id: str | None = None
-    rfc_message_id: str | None = None
 
 
 class MailTransport(Protocol):

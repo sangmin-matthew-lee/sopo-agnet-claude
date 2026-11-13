@@ -297,6 +297,9 @@ def test_live_email_gets_a_real_threaded_reply(client, resend, monkeypatch):
     assert to_customer[0]["subject"] == "Re: Quote"
     assert to_customer[0]["headers"]["In-Reply-To"] == "<e1@mail.gmail.com>"
     assert to_am[0]["headers"]["X-SOPO-Thread"] == thread["thread_id"]
+    # the AM sees the customer's email and the holding reply the customer got
+    assert "Can I get a quote for 50 controllers?" in to_am[0]["text"]
+    assert to_customer[0]["text"].strip() in to_am[0]["text"]
     assert db.list_emails() == []  # nothing in the sandbox view
     with db.get_conn() as conn:
         assert conn.execute("SELECT COUNT(*) FROM thread_traces").fetchone()[0] == 1

@@ -11,6 +11,7 @@ class SimulatedTransport:
 
     def send(self, email: OutboundEmail, db_path: str | None = None) -> SendResult:
         log_id = db.insert_email(
-            email.thread_id, email.inbox_type, email.recipient, email.subject, email.body, db_path
+            email.thread_id, email.inbox_type, email.recipient, email.subject, email.body, db_path,
+            author=email.author, attachments=[(a.filename, a.content_type, a.data) for a in email.attachments],
         )
         return SendResult(log_id=log_id, status=SIMULATED)

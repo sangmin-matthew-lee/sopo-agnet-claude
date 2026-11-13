@@ -7,7 +7,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 DB_PATH = os.environ.get("SOP_DB_PATH", "sop_demo.db")
 
@@ -98,6 +98,13 @@ CREATE TABLE IF NOT EXISTS simulated_emails (
     body TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS email_attachments (  -- files sent with an email (e.g. the sample return label)
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email_id INTEGER NOT NULL,         -- simulated_emails.id
+    filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    data BLOB NOT NULL
+);
 """
 
 # Live (real email) mode. None of these are touched by reset_db(); see reset_live().
@@ -164,6 +171,12 @@ _ADDED_COLUMNS = (
     ("simulated_emails", "delivered_to", "TEXT"),  # real address used by Resend (am@ / eng@ / tester)
     ("simulated_emails", "provider_id", "TEXT"),
     ("simulated_emails", "rfc_message_id", "TEXT"),
+    ("simulated_emails", "author", "TEXT NOT NULL DEFAULT 'agent'"),  # agent | "Sarah Kim (Account Manager)"
+    ("mail_messages", "sender", "TEXT"),  # incoming customer mail: who wrote it
+    ("mail_messages", "body", "TEXT"),  # ... and its cleaned text (quotes stripped), for the staff thread view
+    ("thread_vaults", "reply_address", "TEXT NOT NULL DEFAULT 'support'"),  # live: support | am | eng
+    ("thread_vaults", "paused_from", "TEXT"),  # HUMAN_HANDLING: the status to restore on hand-back
+    ("thread_vaults", "human_roles", "TEXT"),  # HUMAN_HANDLING: staff who replied, e.g. "AM,ENGINEER"
 )
 
 SIMULATED_SOURCE, LIVE_SOURCE = "simulated", "live"
@@ -173,6 +186,7 @@ APP_TABLES = (
     "thread_vaults",
     "processed_messages",
     "simulated_emails",
+    "email_attachments",
     "staff",
     "engineer_parts",
     "calendar_events",
@@ -409,6 +423,7 @@ def reset_db(db_path: str | None = None) -> None:
         conn.execute(f"DELETE FROM calendar_events WHERE kind = 'BUSY' OR thread_id IS NULL OR thread_id NOT IN {live}")
         conn.execute(f"DELETE FROM thread_traces WHERE thread_id NOT IN {live}")
         conn.execute("DELETE FROM simulated_emails WHERE source != 'live'")
+        conn.execute("DELETE FROM email_attachments WHERE email_id NOT IN (SELECT id FROM simulated_emails)")
         conn.execute("DELETE FROM thread_vaults WHERE source != 'live'")
         conn.execute("DELETE FROM orders WHERE tester_id IS NULL")
         _seed_orders(conn)
@@ -430,6 +445,7 @@ def reset_live(db_path: str | None = None) -> None:
         for table in ("processed_messages", "tech_schedules", "calendar_events", "thread_traces"):
             conn.execute(f"DELETE FROM {table} WHERE thread_id IN {live}")
         conn.execute("DELETE FROM simulated_emails WHERE source = 'live'")
+        conn.execute("DELETE FROM email_attachments WHERE email_id NOT IN (SELECT id FROM simulated_emails)")
         conn.execute("DELETE FROM thread_vaults WHERE source = 'live'")
         conn.execute(
             "DELETE FROM engineer_parts WHERE part_number IN (SELECT part_number FROM orders WHERE tester_id IS NOT NULL)"
@@ -568,18 +584,54 @@ def insert_email(
     delivered_to: str | None = None,
     provider_id: str | None = None,
     rfc_message_id: str | None = None,
+    author: str = "agent",
+    attachments: Iterable[tuple[str, str, bytes]] = (),
 ) -> int:
     with get_conn(db_path) as conn:
         cur = conn.execute(
             """INSERT INTO simulated_emails
                (thread_id, inbox_type, recipient_email, subject, body, created_at,
-                source, status, delivered_to, provider_id, rfc_message_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                source, status, delivered_to, provider_id, rfc_message_id, author)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (thread_id, inbox_type, recipient_email, subject, body, now_iso(),
-             source, status, delivered_to, provider_id, rfc_message_id),
+             source, status, delivered_to, provider_id, rfc_message_id, author),
         )
-        assert cur.lastrowid is not None  # always set after an INSERT
-        return cur.lastrowid
+        email_id = cur.lastrowid
+        assert email_id is not None  # always set after an INSERT
+        conn.executemany(
+            "INSERT INTO email_attachments (email_id, filename, content_type, data) VALUES (?,?,?,?)",
+            [(email_id, name, ctype, data) for name, ctype, data in attachments],
+        )
+        return email_id
+
+
+def list_attachments(email_ids: Iterable[int], db_path: str | None = None) -> dict[int, list[dict[str, Any]]]:
+    """{email_id: [{id, filename, content_type}]} (no file data) for the inbox views."""
+    ids = tuple(email_ids)
+    out: dict[int, list[dict[str, Any]]] = {}
+    if not ids:
+        return out
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT id, email_id, filename, content_type FROM email_attachments "
+            f"WHERE email_id IN ({','.join('?' * len(ids))}) ORDER BY id",
+            ids,
+        )
+        for r in rows:
+            out.setdefault(r["email_id"], []).append({"id": r["id"], "filename": r["filename"],
+                                                      "content_type": r["content_type"]})
+    return out
+
+
+def get_attachment(attachment_id: int, db_path: str | None = None) -> dict[str, Any] | None:
+    """The file plus the email it belongs to (thread_id, source), so callers can check access."""
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            """SELECT a.filename, a.content_type, a.data, e.thread_id, e.source
+               FROM email_attachments a JOIN simulated_emails e ON e.id = a.email_id WHERE a.id = ?""",
+            (attachment_id,),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def list_emails(db_path: str | None = None, include_live: bool = False) -> list[dict[str, Any]]:

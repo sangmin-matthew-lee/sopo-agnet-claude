@@ -286,6 +286,16 @@ def _reject_spoof(
     )
     _send(
         ctx,
+        CUSTOMER_INBOX,
+        ctx.customer_email,
+        "Your return request is under review",
+        (
+            "Thank you for contacting us. We were unable to verify your request automatically, "
+            "so it has been forwarded to our Sales Operations team for manual review."
+        ),
+    )
+    _send(  # after the reply, so a live copy quotes it
+        ctx,
         SOP_EMPLOYEE_INBOX,
         order["sop_owner_email"],
         f"[SECURITY] Possible spoofed return request on {order['order_id']}",
@@ -293,16 +303,6 @@ def _reject_spoof(
             f"A return was requested for order {order['order_id']} / part {order['part_number']} "
             f"by {ctx.customer_email}, but this order belongs to {order['customer_email']}.\n\n"
             f"No label was created. Thread: {ctx.thread_id}. Please review manually."
-        ),
-    )
-    _send(
-        ctx,
-        CUSTOMER_INBOX,
-        ctx.customer_email,
-        "Your return request is under review",
-        (
-            "Thank you for contacting us. We were unable to verify your request automatically, "
-            "so it has been forwarded to our Sales Operations team for manual review."
         ),
     )
     result = (

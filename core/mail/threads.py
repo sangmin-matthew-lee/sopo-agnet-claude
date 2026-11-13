@@ -22,11 +22,14 @@ def normalize(message_id: str | None) -> str | None:
     return message_id if message_id.startswith("<") else f"<{message_id}>"
 
 
-def remember(message_id: str, thread_id: str, direction: str, subject: str | None, db_path: str | None = None) -> None:
+def remember(message_id: str, thread_id: str, direction: str, subject: str | None, db_path: str | None = None,
+             *, sender: str | None = None, body: str | None = None) -> None:
+    """Record a Message-ID of this thread. Incoming customer mail also keeps its sender and cleaned text."""
     with db.get_conn(db_path) as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO mail_messages VALUES (?,?,?,?,?)",
-            (message_id, thread_id, direction, subject, db.now_iso()),
+            """INSERT OR IGNORE INTO mail_messages
+               (rfc_message_id, thread_id, direction, subject, created_at, sender, body) VALUES (?,?,?,?,?,?,?)""",
+            (message_id, thread_id, direction, subject, db.now_iso(), sender, body),
         )
 
 
@@ -73,3 +76,37 @@ def reply_headers(thread_id: str, db_path: str | None = None) -> tuple[dict[str,
 def re_subject(original: str | None, fallback: str) -> str:
     subject = (original or "").strip() or fallback
     return subject if subject.lower().startswith("re:") else f"Re: {subject}"
+
+
+MAX_TRANSCRIPT_MESSAGES = 10
+MAX_TRANSCRIPT_CHARS = 2000
+
+
+def transcript(thread_id: str, db_path: str | None = None) -> str:
+    """The conversation with the customer so far, newest first, quoted like a forwarded email.
+
+    Customer emails come from mail_messages (IN); replies are the live emails actually sent to the customer
+    (by the agent or by staff from the dashboard)."""
+    with db.get_conn(db_path) as conn:
+        incoming = conn.execute(
+            """SELECT created_at, 0 AS seq, sender AS sender, '' AS recipient, subject, body FROM mail_messages
+               WHERE thread_id = ? AND direction = 'IN' AND body IS NOT NULL""",
+            (thread_id,),
+        ).fetchall()
+        replies = conn.execute(
+            """SELECT created_at, id AS seq, author AS sender, delivered_to AS recipient, subject, body
+               FROM simulated_emails
+               WHERE thread_id = ? AND source = 'live' AND inbox_type = 'CUSTOMER_INBOX' AND status = 'SENT'""",
+            (thread_id,),
+        ).fetchall()
+    msgs = sorted((dict(r) for r in [*incoming, *replies]), key=lambda m: (m["created_at"], m["seq"]))
+    msgs = msgs[-MAX_TRANSCRIPT_MESSAGES:][::-1]
+    if not msgs:
+        return ""
+    parts = []
+    for m in msgs:
+        sender = "SOPO AI agent" if m["sender"] == "agent" else m["sender"]
+        body = m["body"] if len(m["body"]) <= MAX_TRANSCRIPT_CHARS else m["body"][:MAX_TRANSCRIPT_CHARS] + " […]"
+        to = f"\nTo: {m['recipient']}" if m["recipient"] else ""
+        parts.append(f"From: {sender}{to}\nDate: {m['created_at']}\nSubject: {m['subject']}\n\n{body.strip()}")
+    return "---------- Conversation so far (newest first) ----------\n\n" + "\n\n- - -\n\n".join(parts)

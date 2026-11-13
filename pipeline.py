@@ -133,12 +133,13 @@ def _escalate(
         f"Escalated thread {thread_id} from {sender.email}.\n"
         f"Reasons: {'; '.join(reasons)}\n\n--- Customer message (unmasked) ---\n{clean_text}"
     )
-    mail.send(thread_id, SOP_EMPLOYEE_INBOX, db.SOP_OWNER_EMAIL, subject, sop_body, best_effort=True)
     inboxes = [SOP_EMPLOYEE_INBOX]
+    # The holding reply goes first, so the staff copy of a live thread quotes it.
     if not (sender.internal or sender.automated):  # colleagues and machines get no holding reply
         reply = HOLDING_REPLY if sender.has_orders else NEW_CONTACT_REPLY
         mail.send(thread_id, CUSTOMER_INBOX, sender.email, "We've received your message", reply, best_effort=True)
         inboxes.append(CUSTOMER_INBOX)
+    mail.send(thread_id, SOP_EMPLOYEE_INBOX, db.SOP_OWNER_EMAIL, subject, sop_body, best_effort=True)
     trace.add("phase2", "Escalated to human", inboxes=inboxes, subject=subject)
 
 

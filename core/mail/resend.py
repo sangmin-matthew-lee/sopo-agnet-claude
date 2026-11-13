@@ -3,7 +3,8 @@
 - Customer replies go only to a registered tester, threaded (In-Reply-To / References / "Re: <subject>").
 - Mail for staff is delivered to the shared AM / engineer test inboxes (DB identities are unchanged, so
   engineer priority and calendars work as before) and carries X-SOPO-Thread so the copy that comes back
-  in can be shown to the right tester.
+  in can be shown to the right tester. It quotes the conversation so far, so staff see which customer
+  email the agent answered.
 - Every attempt is written to the send log (simulated_emails, source='live'), sent or not.
 """
 
@@ -34,8 +35,8 @@ class ResendTransport:
     def send(self, email: OutboundEmail, db_path: str | None = None) -> SendResult:
         cfg = LiveConfig.from_env()
         message_id = f"<sopo-{uuid.uuid4().hex}@{cfg.test_domain or 'localhost'}>"
-        headers = {"Message-ID": message_id, **email.headers}
-        subject = email.subject
+        headers = {"Message-ID": message_id}
+        subject, body = email.subject, email.body
 
         if email.inbox_type == CUSTOMER_INBOX:
             to = email.recipient
@@ -52,15 +53,19 @@ class ResendTransport:
             sender = f"SOPO Agent <{cfg.agent_address}>"
             headers[THREAD_HEADER] = email.thread_id
             headers["Auto-Submitted"] = "auto-generated"
+            # Staff see exactly which customer email this is about: the whole thread, quoted like a forward.
+            headers.update(threads.reply_headers(email.thread_id, db_path)[0])
+            conversation = threads.transcript(email.thread_id, db_path)
+            body = f"{body.rstrip()}\n\n{conversation}" if conversation else body
             allowed = bool(cfg.test_domain)
 
         def logged(status: str, provider_id: str | None = None) -> SendResult:
             log_id = db.insert_email(
-                email.thread_id, email.inbox_type, email.recipient, subject, email.body, db_path,
+                email.thread_id, email.inbox_type, email.recipient, subject, body, db_path,
                 source=db.LIVE_SOURCE, status=status, delivered_to=to,
-                provider_id=provider_id, rfc_message_id=message_id,
+                provider_id=provider_id, rfc_message_id=message_id, author=email.author,
             )
-            return SendResult(log_id, status, provider_id, message_id)
+            return SendResult(log_id, status)
 
         if not allowed:
             log.warning("Live send refused: %s is not a registered tester / test inbox", email.inbox_type)
@@ -69,7 +74,7 @@ class ResendTransport:
             log.warning("Live send blocked: Resend email quota used up")
             return logged(BLOCKED_QUOTA)
 
-        payload = {"from": sender, "to": [to], "subject": subject, "text": email.body, "headers": headers}
+        payload = {"from": sender, "to": [to], "subject": subject, "text": body, "headers": headers}
         if email.inbox_type == CUSTOMER_INBOX:
             payload["reply_to"] = cfg.support_address
         try:

@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from core import db
-from core.mail.base import SENT, SIMULATED, MailTransport, OutboundEmail, SendResult
+from core.mail.base import AGENT, SENT, SIMULATED, Attachment, MailTransport, OutboundEmail, SendResult
 from core.mail.resend import ResendTransport
 from core.mail.simulated import SimulatedTransport
 
@@ -37,17 +37,19 @@ def send(
     db_path: str | None = None,
     *,
     best_effort: bool = False,
+    author: str = AGENT,
+    attachments: tuple[Attachment, ...] = (),
 ) -> int:
     """Send one email and log it. Returns the log row id.
 
     Raises MailNotSent if a live email wasn't delivered, so an agent run stops and the pipeline
     fails closed. Escalations pass best_effort=True: they are logged locally even if not delivered.
     """
-    email = OutboundEmail(thread_id, inbox_type, recipient, subject, body)
+    email = OutboundEmail(thread_id, inbox_type, recipient, subject, body, author, attachments)
     result = transport_for(thread_id, db_path).send(email, db_path)
     if result.status not in (SENT, SIMULATED) and not best_effort:
         raise MailNotSent(result)
     return result.log_id
 
 
-__all__ = ["MailNotSent", "MailTransport", "OutboundEmail", "SendResult", "send", "transport_for"]
+__all__ = ["Attachment", "MailNotSent", "MailTransport", "OutboundEmail", "SendResult", "send", "transport_for"]

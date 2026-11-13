@@ -71,6 +71,31 @@ def test_staff_mail_goes_to_shared_test_inboxes_with_thread_header(resend, db_pa
     assert "eng@test.example.com" in rows["ENGINEER_INBOX"]["delivered_to"]
 
 
+def test_staff_mail_quotes_the_whole_thread(resend, db_path):
+    _tester(db_path)
+    db.save_thread("live-1", TESTER, {}, "PROCESSING", db_path, source="live")
+    threads.remember("<c1@gmail.com>", "live-1", threads.IN, "Return request", db_path,
+                     sender=TESTER, body="Please return ORD-12345 part KX-4821")
+    mail.send("live-1", "CUSTOMER_INBOX", TESTER, "Your label", "Label UPS-RMA-ORD-12345 is ready.", db_path)
+    mail.send("live-1", "SOP_EMPLOYEE_INBOX", db.AM_JOHN, "[SOP] Your label", "Return approved.", db_path)
+
+    am = resend.sent()[-1]
+    text = am["text"]
+    assert text.startswith("Return approved.")
+    # newest first: the agent's reply, then the customer's original email
+    assert text.index("Label UPS-RMA-ORD-12345 is ready.") < text.index("Please return ORD-12345 part KX-4821")
+    assert f"From: {TESTER}" in text and "From: SOPO AI agent" in text
+    assert am["headers"]["In-Reply-To"] == "<c1@gmail.com>"
+    assert am["headers"]["References"].split()[0] == "<c1@gmail.com>"
+    assert _log(db_path)[0]["body"] == text  # the sent log shows what was really sent
+
+
+def test_staff_mail_without_a_stored_customer_email_is_unchanged(resend, db_path):
+    _live_thread(db_path)  # Message-ID only, no body
+    mail.send("live-1", "SOP_EMPLOYEE_INBOX", db.AM_JOHN, "s", "Just this.", db_path)
+    assert resend.sent()[0]["text"] == "Just this."
+
+
 def test_never_sends_to_an_address_that_is_not_a_tester(resend, db_path):
     _live_thread(db_path, email="stranger@gmail.com")
     with pytest.raises(mail.MailNotSent):

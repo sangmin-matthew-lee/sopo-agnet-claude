@@ -14,6 +14,7 @@ from core import db
 from core.mail import resend_api, threads, usage
 from core.mail.config import LiveConfig
 from core.mail.resend import THREAD_HEADER, is_tester
+from core.masker import preprocess_email
 
 log = logging.getLogger("sopo.live")
 
@@ -116,7 +117,7 @@ async def _customer_email(cfg: LiveConfig, email_id: str, usage_id: int, full: d
     refs = threads.parse_ids(headers.get("in-reply-to")) + threads.parse_ids(headers.get("references"))
     thread_id = threads.find_thread(refs, owner=sender) or f"live-{uuid.uuid4().hex[:12]}"
     message_id = message_id or f"<resend-{email_id}@{cfg.test_domain or 'localhost'}>"
-    threads.remember(message_id, thread_id, threads.IN, subject)
+    threads.remember(message_id, thread_id, threads.IN, subject, sender=sender, body=preprocess_email(body))
     usage.attach(usage_id, thread_id)
     _log(email_id, sender, to, subject, PIPELINE, "new thread" if not refs else "reply", thread_id)
 
