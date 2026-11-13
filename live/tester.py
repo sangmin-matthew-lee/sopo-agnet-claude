@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from core import db, mail
@@ -177,6 +177,25 @@ async def hand_back(thread_id: str, tester: dict[str, Any] = Depends(current_tes
     return {"thread_status": db.resume_thread(thread_id)}
 
 
+# ------------------------------------------------------------------ attachments
+
+
+def file_response(found: dict[str, Any]) -> Response:
+    name = found["filename"].replace('"', "")
+    return Response(found["data"], media_type=found["content_type"],
+                    headers={"Content-Disposition": f'inline; filename="{name}"'})
+
+
+@router.get("/t/{token}/attachments/{attachment_id}")
+async def attachment(attachment_id: int, tester: dict[str, Any] = Depends(current_tester)) -> Response:
+    """A file sent in this tester's own threads (e.g. the sample return label)."""
+    found = db.get_attachment(attachment_id)
+    if found is None:
+        raise HTTPException(404, "Not found.")
+    _own_thread(tester, found["thread_id"])  # 404 for anyone else's file
+    return file_response(found)
+
+
 # ----------------------------------------------------------------------- state
 
 
@@ -207,6 +226,9 @@ def tester_state(tester: dict[str, Any]) -> dict[str, Any]:
                                f"WHERE thread_id IN ({marks})", ids)
     for t in traces:
         t["trace"] = json.loads(t.pop("trace_json"))
+    files = db.list_attachments(m["id"] for m in sent)
+    for m in sent:
+        m["attachments"] = files.get(m["id"], [])
     for t in threads:  # who would answer from the AM / engineer tab
         t["staff"] = {role: db.staff_name(email) for role, email in db.thread_staff(t["thread_id"]).items()}
     return {

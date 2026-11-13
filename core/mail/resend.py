@@ -12,8 +12,10 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import uuid
+from typing import Any
 
 from core import db
 from core.mail import resend_api, threads, usage
@@ -89,6 +91,7 @@ class ResendTransport:
                 email.thread_id, email.inbox_type, email.recipient, subject, body, db_path,
                 source=db.LIVE_SOURCE, status=status, delivered_to=to,
                 provider_id=provider_id, rfc_message_id=message_id, author=email.author,
+                attachments=[(a.filename, a.content_type, a.data) for a in email.attachments],
             )
             return SendResult(log_id, status)
 
@@ -99,9 +102,14 @@ class ResendTransport:
             log.warning("Live send blocked: Resend email quota used up")
             return logged(BLOCKED_QUOTA)
 
-        payload = {"from": sender, "to": [to], "subject": subject, "text": body, "headers": headers}
+        payload: dict[str, Any] = {"from": sender, "to": [to], "subject": subject, "text": body, "headers": headers}
         if reply_to:
             payload["reply_to"] = reply_to
+        if email.attachments:
+            payload["attachments"] = [
+                # the content type is derived from the filename (.pdf)
+                {"filename": a.filename, "content": base64.b64encode(a.data).decode()} for a in email.attachments
+            ]
         try:
             provider_id, quota = resend_api.send_email(payload, idempotency_key=message_id)
         except resend_api.ResendError as exc:

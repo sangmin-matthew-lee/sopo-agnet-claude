@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from core import db
@@ -16,7 +16,7 @@ from core.ratelimit import client_ip as _client_ip, rate_limiter
 from pipeline import process_email, process_email_stream
 from sop_agents.tech_agent import demo_slots
 from core.mail import usage
-from live.tester import router as tester_router
+from live.tester import file_response, router as tester_router
 from live.webhook import router as webhook_router
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -118,6 +118,15 @@ async def reset_live(req: ResetLive) -> dict[str, Any]:
         raise HTTPException(400, f'Send {{"confirm": "{RESET_LIVE_CONFIRMATION}"}} to delete all live data.')
     db.reset_live()
     return {"ok": True}
+
+
+@app.get("/api/attachments/{attachment_id}", dependencies=[Depends(require_passcode)])
+async def attachment(attachment_id: int) -> Response:
+    """A file sent with an email (e.g. the sample return label), for the sandbox inbox cards."""
+    found = db.get_attachment(attachment_id)
+    if found is None:
+        raise HTTPException(404, "Not found.")
+    return file_response(found)
 
 
 @app.get("/api/state", dependencies=[Depends(require_passcode)])

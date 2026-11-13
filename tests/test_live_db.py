@@ -98,3 +98,15 @@ def test_old_db_gets_new_columns_in_place(tmp_path):
     assert db.thread_source("t1", path) == "simulated"
     assert db.load_thread("t1", path) is not None
     assert db.list_orders(path)  # seeded with the new tester_id column present
+
+
+def test_resets_remove_attachments_of_deleted_emails(db_path):
+    sim = db.insert_email("sim-1", "CUSTOMER_INBOX", "john@acmecorp.com", "s", "b", db_path,
+                          attachments=[("a.pdf", "application/pdf", b"1")])
+    live = db.insert_email("live-1", "CUSTOMER_INBOX", "t@gmail.com", "s", "b", db_path, source="live",
+                           status="SENT", attachments=[("b.pdf", "application/pdf", b"2")])
+    db.reset_db(db_path)
+    assert db.list_attachments([sim, live], db_path) == {live: [{"id": 2, "filename": "b.pdf",
+                                                                "content_type": "application/pdf"}]}
+    db.reset_live(db_path)
+    assert db.list_attachments([live], db_path) == {}

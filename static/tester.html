@@ -313,6 +313,9 @@
                       <div class="text-slate-500 mt-0.5">${meta}</div>
                     </summary>
                     <pre class="px-3 pb-3 text-[12px]">${esc(m.body)}</pre>
+                    ${(m.attachments || [])
+                        .map((a) => `<a href="/t/${token}/attachments/${a.id}" target="_blank" rel="noopener" class="block px-3 pb-3 text-xs text-emerald-700 underline">📎 ${esc(a.filename)}</a>`)
+                        .join("")}
                   </details>`;
             }
 

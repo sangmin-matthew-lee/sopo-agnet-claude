@@ -308,3 +308,24 @@ async def test_customer_mail_on_a_paused_thread_goes_to_the_people_not_the_agent
     new = resend.sent()[before:]
     assert sorted(m["to"][0].split("<")[1] for m in new) == ["am@test.example.com>", "eng@test.example.com>"]
     assert all(m["subject"].startswith("[HUMAN]") and "Here is the photo." in m["text"] for m in new)
+
+
+# -------------------------------------------------------------------- attachments
+
+
+def test_label_download_only_for_the_owner(client, resend):
+    from core import mail
+
+    token, _ = _thread_with_order(client)
+    pdf = mail.Attachment("SAMPLE-return-label.pdf", "application/pdf", b"%PDF-1.4 x")
+    mail.send("live-1", "CUSTOMER_INBOX", "a@gmail.com", "Label", "Here.", attachments=(pdf,))
+    [att] = client.get(f"/t/{token}/state").json()["sent_log"][0]["attachments"]
+
+    r = client.get(f"/t/{token}/attachments/{att['id']}")
+    assert r.status_code == 200 and r.content == pdf.data and r.headers["content-type"] == "application/pdf"
+    other = token_of(register(client, "b@gmail.com"))
+    assert client.get(f"/t/{other}/attachments/{att['id']}").status_code == 404
+    assert client.get(f"/t/{token}/attachments/999").status_code == 404
+    # the sandbox admin can open it with the passcode
+    assert client.get(f"/api/attachments/{att['id']}").status_code == 401
+    assert client.get(f"/api/attachments/{att['id']}", headers=H).content == pdf.data

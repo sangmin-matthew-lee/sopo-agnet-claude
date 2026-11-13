@@ -692,10 +692,14 @@ def get_attachment(attachment_id: int, db_path: str | None = None) -> dict[str, 
 def list_emails(db_path: str | None = None, include_live: bool = False) -> list[dict[str, Any]]:
     where = "" if include_live else "WHERE source = 'simulated'"
     with get_conn(db_path) as conn:
-        return [
+        emails = [
             dict(r)
             for r in conn.execute(f"SELECT * FROM simulated_emails {where} ORDER BY id DESC")
         ]
+    files = list_attachments((e["id"] for e in emails), db_path)
+    for e in emails:
+        e["attachments"] = files.get(e["id"], [])
+    return emails
 
 
 def save_trace(thread_id: str, message_id: str, steps: list[dict[str, Any]], db_path: str | None = None) -> None:

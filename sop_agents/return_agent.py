@@ -22,7 +22,7 @@ from agents import (
 )
 from agents.models.interface import Model
 
-from core import db, mail
+from core import db, labels, mail
 from core.jev_router import PIILeakError
 from core.masker import TOKEN_RE, add_to_vault, contains_raw_pii, tokens_of, unmask_text
 
@@ -56,6 +56,7 @@ class SOPSharedContext:
         False  # set after a security rejection; blocks further outbound customer mail
     )
     label_token: str | None = None  # token of the label issued/reused in this run
+    label_pdf: mail.Attachment | None = None  # the sample label sent with the approval email (local only)
     verify_attempted: bool = False  # ownership/eligibility check has run in this turn
     step_logs: list[dict[str, Any]] = field(default_factory=list)
     # Optional live-event sink (the UI stream). Receives each log entry as it happens.
@@ -87,9 +88,16 @@ def _days_since(iso: str) -> float:
 
 
 def _send(
-    ctx: SOPSharedContext, inbox: str, recipient: str, subject: str, body: str
+    ctx: SOPSharedContext,
+    inbox: str,
+    recipient: str,
+    subject: str,
+    body: str,
+    attachments: tuple[mail.Attachment, ...] = (),
 ) -> int:
-    return mail.send(ctx.thread_id, inbox, recipient, subject, body, ctx.db_path)
+    return mail.send(
+        ctx.thread_id, inbox, recipient, subject, body, ctx.db_path, attachments=attachments
+    )
 
 
 def _dispatch(
@@ -104,6 +112,7 @@ def _dispatch(
             ctx.customer_email,
             subject,
             unmask_text(customer_body, ctx.vault),
+            (ctx.label_pdf,) if ctx.label_pdf else (),  # the sample label goes to the customer only
         )
     ]
     if sop_summary.strip():
@@ -258,9 +267,21 @@ def verify_order_and_create_label_impl(
         reused = False
     label_token = add_to_vault(ctx.vault, "LABEL", label)
     ctx.label_token = label_token
+    ctx.label_pdf = mail.Attachment(
+        labels.filename(order_id),
+        "application/pdf",
+        labels.sample_return_label_pdf(
+            label, order_id, part_number, quantity, ctx.customer_email, db.now_iso()[:10]
+        ),
+    )
     ctx.thread_status = RETURN_LABEL_ISSUED
     ctx.log(
-        "label", label_token=label_token, label=label, reused=reused, local_only=True
+        "label",
+        label_token=label_token,
+        label=label,
+        reused=reused,
+        attachment=ctx.label_pdf.filename,
+        local_only=True,
     )
 
     verb = "already existed and was reused" if reused else "was created"
@@ -445,8 +466,8 @@ Procedure:
 4. Act on its result:
    - APPROVED: call send_return_emails with a short friendly reply. customer_body MUST contain the
      label token verbatim (e.g. "Your return label number is <LABEL_TOKEN_1>.") and tell the customer
-     to write or print that label number on the package. There are no attachments: never say the label
-     is "attached" or "enclosed". Include a one-line sop_summary.
+     that a SAMPLE label PDF is attached for this demo and is not valid for shipping. Never call it a
+     real or valid label. Include a one-line sop_summary.
    - INELIGIBLE: call send_return_emails explaining the reason politely; include a sop_summary.
    - NOT_FOUND or MISSING_INFO: call send_return_emails with request_missing_info=true.
    - REJECTED: do nothing else.

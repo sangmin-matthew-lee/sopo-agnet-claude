@@ -183,3 +183,16 @@ def test_ai_signature_names_the_account_manager(resend, db_path):
     threads.remember("<c2@gmail.com>", "live-2", threads.IN, "Help", db_path, mailbox=threads.AM)
     mail.send("live-2", "CUSTOMER_INBOX", TESTER, "s", "Hello.", db_path)
     assert "Your account manager" in resend.sent()[1]["text"]
+
+
+def test_attachment_is_sent_as_base64_and_kept_in_the_log(resend, db_path):
+    import base64
+
+    _tester(db_path)
+    _live_thread(db_path)
+    pdf = mail.Attachment("SAMPLE-return-label-ORD-1.pdf", "application/pdf", b"%PDF-1.4 sample")
+    mail.send("live-1", "CUSTOMER_INBOX", TESTER, "Label", "Here.", db_path, attachments=(pdf,))
+    [sent] = resend.sent()
+    assert sent["attachments"] == [{"filename": pdf.filename, "content": base64.b64encode(pdf.data).decode()}]
+    [row] = _log(db_path)
+    assert [a["filename"] for a in row["attachments"]] == [pdf.filename]

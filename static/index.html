@@ -974,6 +974,17 @@
             }
 
             // ---------------------------------------------------------- inboxes & DB
+            // The download needs the passcode header, so fetch it and open the file from memory.
+            async function openAttachment(a) {
+                const res = await fetch(`/api/attachments/${a.id}`, {
+                    headers: { "X-Demo-Passcode": $("passcode").value },
+                });
+                if (!res.ok) return toast(`Could not open ${a.filename} (${res.status}).`);
+                const url = URL.createObjectURL(await res.blob());
+                window.open(url, "_blank");
+                setTimeout(() => URL.revokeObjectURL(url), 60000);
+            }
+
             function emailCard(e, withReply) {
                 const card = document.createElement("div");
                 card.className = "border rounded p-2 bg-slate-50";
@@ -982,6 +993,13 @@
     <div class="text-[11px] text-slate-400 font-mono">thread: ${esc(e.thread_id)}</div>
     <div class="font-semibold">${esc(e.subject)}</div>
     <pre class="text-xs mt-1">${esc(e.body)}</pre>`;
+                for (const a of e.attachments || []) {
+                    const link = document.createElement("button");
+                    link.className = "mt-1 mr-2 text-xs text-indigo-700 underline";
+                    link.textContent = `📎 ${a.filename}`;
+                    link.onclick = () => openAttachment(a);
+                    card.appendChild(link);
+                }
                 if (withReply) {
                     const b = document.createElement("button");
                     b.className =
