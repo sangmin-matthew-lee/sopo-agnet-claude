@@ -212,6 +212,7 @@ def tester_state(tester: dict[str, Any]) -> dict[str, Any]:
     return {
         "tester": {"email": tester["email"], "since": tester["created_at"]},
         "support_address": cfg.support_address,
+        "am_address": cfg.am_address,
         "live_enabled": cfg.live_enabled,
         "orders": orders,
         "threads": threads,

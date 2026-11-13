@@ -168,3 +168,18 @@ def test_scenarios_left_uses_recent_thread_average(db_path):
     snap = usage.snapshot(db_path)
     assert snap["avg_per_scenario"] == 6.0 and snap["avg_sample_threads"] == 2
     assert snap["scenarios_left"] == (100 - 12) // 6
+
+
+def test_ai_signature_names_the_account_manager(resend, db_path):
+    _tester(db_path)
+    db.save_thread("live-1", TESTER, {}, "PROCESSING", db_path, source="live")
+    threads.remember("<c1@gmail.com>", "live-1", threads.IN, "Help", db_path, mailbox=threads.ENG)
+    mail.send("live-1", "CUSTOMER_INBOX", TESTER, "s", "Hello.", db_path)
+    sent = resend.sent()[0]
+    assert sent["from"] == "SOPO AI Assistant <eng@test.example.com>"
+    assert "Our engineering team can see this conversation" in sent["text"]
+
+    db.save_thread("live-2", TESTER, {}, "PROCESSING", db_path, source="live")
+    threads.remember("<c2@gmail.com>", "live-2", threads.IN, "Help", db_path, mailbox=threads.AM)
+    mail.send("live-2", "CUSTOMER_INBOX", TESTER, "s", "Hello.", db_path)
+    assert "Your account manager" in resend.sent()[1]["text"]

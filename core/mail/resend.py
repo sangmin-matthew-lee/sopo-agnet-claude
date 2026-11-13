@@ -1,6 +1,8 @@
 """Live transport: real delivery through Resend, for threads that came in by real email.
 
-- Customer replies go only to a registered tester, threaded (In-Reply-To / References / "Re: <subject>").
+- Customer replies go only to a registered tester, threaded (In-Reply-To / References / "Re: <subject>"),
+  from the address the customer wrote to. Agent replies to mail sent to am@ / eng@ are signed
+  "SOPO AI Assistant" so the customer knows an AI answered.
 - Mail for staff is delivered to the shared AM / engineer test inboxes (DB identities are unchanged, so
   engineer priority and calendars work as before) and carries X-SOPO-Thread so the copy that comes back
   in can be shown to the right tester. It quotes the conversation so far, so staff see which customer
@@ -29,6 +31,18 @@ def is_tester(email: str, db_path: str | None = None) -> bool:
         return conn.execute("SELECT 1 FROM testers WHERE email = ?", (email.strip().lower(),)).fetchone() is not None
 
 
+AI_ASSISTANT = "SOPO AI Assistant"
+
+
+def ai_signature(thread_id: str, mailbox: str, db_path: str | None = None) -> str:
+    if mailbox == threads.AM:
+        who = f"Your account manager {db.staff_name(db.thread_staff(thread_id, db_path)['AM'], db_path)}"
+    else:
+        who = "Our engineering team"
+    return (f"— {AI_ASSISTANT}, AxMatt Supply\n"
+            f"This reply was written by an AI agent. {who} can see this conversation and may reply personally.")
+
+
 class ResendTransport:
     name = "resend"
 
@@ -37,11 +51,21 @@ class ResendTransport:
         message_id = f"<sopo-{uuid.uuid4().hex}@{cfg.test_domain or 'localhost'}>"
         headers = {"Message-ID": message_id}
         subject, body = email.subject, email.body
+        reply_to: str | None = None
 
         if email.inbox_type == CUSTOMER_INBOX:
             to = email.recipient
-            name = "AxMatt Supply Support" if email.author == AGENT else f"{email.author} via AxMatt Supply"
-            sender = f"{name} <{cfg.support_address}>"
+            # Replies come from the address the customer wrote to: support@, or am@ / eng@ directly.
+            mailbox = threads.mailbox(email.thread_id, db_path)
+            address = {threads.AM: cfg.am_address, threads.ENG: cfg.eng_address}.get(mailbox, cfg.support_address)
+            if email.author != AGENT:
+                name = f"{email.author} via AxMatt Supply"
+            elif mailbox == threads.SUPPORT:
+                name = "AxMatt Supply Support"
+            else:  # the customer wrote to a person: say plainly that an AI answered
+                name = AI_ASSISTANT
+                body = f"{body.rstrip()}\n\n{ai_signature(email.thread_id, mailbox, db_path)}"
+            sender, reply_to = f"{name} <{address}>", address
             reply, original = threads.reply_headers(email.thread_id, db_path)
             headers.update(reply)
             headers["Auto-Submitted"] = "auto-replied"  # RFC 3834: other auto-responders must not answer
@@ -76,8 +100,8 @@ class ResendTransport:
             return logged(BLOCKED_QUOTA)
 
         payload = {"from": sender, "to": [to], "subject": subject, "text": body, "headers": headers}
-        if email.inbox_type == CUSTOMER_INBOX:
-            payload["reply_to"] = cfg.support_address
+        if reply_to:
+            payload["reply_to"] = reply_to
         try:
             provider_id, quota = resend_api.send_email(payload, idempotency_key=message_id)
         except resend_api.ResendError as exc:

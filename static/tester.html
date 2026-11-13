@@ -270,6 +270,14 @@
                         body: "Sorry, that time no longer works for us. Could we move the call to Thursday at 11am instead?",
                         hint: "④에서 받은 ‘미팅 확정’ 메일에 답장으로 보내세요.",
                     },
+                    {
+                        title: "⑥ 담당 AM에게 직접 보내기",
+                        need: ok ? "" : "‘배송 10일 전’ 주문을 먼저 만드세요",
+                        to: state.am_address,
+                        subject: "Return request",
+                        body: `Hi Sarah,\n\nCould you help me return ${o1.part_number} from order ${o1.order_id}? It arrived damaged.\n\nThanks`,
+                        hint: `받는 사람을 ${state.am_address} 로 바꿔 보내세요. AI 에이전트가 AM 주소로, “SOPO AI Assistant” 서명을 달아 답장합니다.`,
+                    },
                 ];
             }
 
@@ -277,12 +285,13 @@
                 setHtml($("scenarios"), scenarios(s.orders)
                     .map((sc, i) => {
                         const mailto = sc.subject
-                            ? `mailto:${encodeURIComponent(s.support_address)}?subject=${encodeURIComponent(sc.subject)}&body=${encodeURIComponent(sc.body)}`
+                            ? `mailto:${encodeURIComponent(sc.to || s.support_address)}?subject=${encodeURIComponent(sc.subject)}&body=${encodeURIComponent(sc.body)}`
                             : "";
                         return `<details data-key="sc-${i}" class="border rounded-lg" ${i === 0 ? "open" : ""}>
                             <summary class="px-3 py-2 font-semibold text-xs cursor-pointer">${esc(sc.title)}
                               ${sc.need ? `<span class="ml-1 text-amber-700 font-normal">· ${esc(sc.need)}</span>` : ""}</summary>
                             <div class="px-3 pb-3 space-y-2 text-xs">
+                              ${sc.to ? `<div><span class="text-slate-500">받는 사람:</span> ${esc(sc.to)}</div>` : ""}
                               ${sc.subject ? `<div><span class="text-slate-500">제목:</span> ${esc(sc.subject)}</div>` : ""}
                               <pre class="bg-slate-50 border rounded p-2 text-[12px]">${esc(sc.body)}</pre>
                               ${sc.hint ? `<p class="text-slate-500">💡 ${esc(sc.hint)}</p>` : ""}

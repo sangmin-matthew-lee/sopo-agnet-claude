@@ -74,7 +74,8 @@ def auth_passed(full: dict[str, Any]) -> bool:
 
 
 async def handle(email_id: str, usage_id: int) -> None:
-    """Fetch the email, then: support@ -> pipeline, am@/eng@ -> internal_inbox, anything else -> log only."""
+    """Fetch the email, then: support@ -> pipeline; am@/eng@ -> pipeline if a tester wrote it (the agent
+    answers from that address), else internal_inbox (our agent's staff copies); anything else -> log only."""
     cfg = LiveConfig.from_env()
     try:
         full = await asyncio.to_thread(resend_api.get_received_email, email_id)
@@ -92,10 +93,16 @@ async def handle(email_id: str, usage_id: int) -> None:
         return
     body = str(full.get("text") or full.get("html") or "")[:MAX_BODY]
 
+    roles = [r for r, a in (("AM", cfg.am_address), ("ENGINEER", cfg.eng_address)) if a in recipients]
     if cfg.support_address in recipients:
-        await _customer_email(cfg, email_id, usage_id, full, headers, message_id, sender, subject, body)
-    elif cfg.am_address in recipients or cfg.eng_address in recipients:
-        roles = [r for r, a in (("AM", cfg.am_address), ("ENGINEER", cfg.eng_address)) if a in recipients]
+        await _customer_email(cfg, email_id, usage_id, full, headers, message_id, sender, subject, body,
+                              threads.SUPPORT)
+    elif roles and sender != cfg.agent_address and is_tester(sender):
+        # A customer wrote to their AM / engineer directly: the agent answers from that address.
+        mailbox = threads.AM if roles[0] == "AM" else threads.ENG
+        await _customer_email(cfg, email_id, usage_id, full, headers, message_id, sender, subject, body,
+                              mailbox, roles)
+    elif roles:
         _internal_email(cfg, email_id, usage_id, roles, headers, sender, subject, body)
     else:
         _log(email_id, sender, ",".join(recipients), subject, IGNORED, "not addressed to a known inbox")
@@ -103,8 +110,8 @@ async def handle(email_id: str, usage_id: int) -> None:
 
 async def _customer_email(cfg: LiveConfig, email_id: str, usage_id: int, full: dict[str, Any],
                           headers: dict[str, str], message_id: str | None, sender: str,
-                          subject: str, body: str) -> None:
-    to = cfg.support_address
+                          subject: str, body: str, mailbox: str, staff_roles: list[str] | None = None) -> None:
+    to = {threads.AM: cfg.am_address, threads.ENG: cfg.eng_address}.get(mailbox, cfg.support_address)
     reason = loop_reason(sender, headers, cfg)
     if reason is None and not is_tester(sender):
         reason = "sender is not a registered tester"
@@ -117,8 +124,11 @@ async def _customer_email(cfg: LiveConfig, email_id: str, usage_id: int, full: d
     refs = threads.parse_ids(headers.get("in-reply-to")) + threads.parse_ids(headers.get("references"))
     thread_id = threads.find_thread(refs, owner=sender) or f"live-{uuid.uuid4().hex[:12]}"
     message_id = message_id or f"<resend-{email_id}@{cfg.test_domain or 'localhost'}>"
-    threads.remember(message_id, thread_id, threads.IN, subject, sender=sender, body=preprocess_email(body))
+    threads.remember(message_id, thread_id, threads.IN, subject, sender=sender, body=preprocess_email(body),
+                     mailbox=mailbox)
     usage.attach(usage_id, thread_id)
+    if staff_roles:  # the AM / engineer tab shows what the customer sent them
+        _store_internal(staff_roles, thread_id, sender, cfg, subject, body)
     _log(email_id, sender, to, subject, PIPELINE, "new thread" if not refs else "reply", thread_id)
 
     try:
@@ -134,12 +144,8 @@ async def _customer_email(cfg: LiveConfig, email_id: str, usage_id: int, full: d
         db.save_trace(thread_id, message_id, trace.steps)
 
 
-def _internal_email(cfg: LiveConfig, email_id: str, usage_id: int, roles: list[str],
-                    headers: dict[str, str], sender: str, subject: str, body: str) -> None:
-    # Only our own agent's mail is tied to a tester's thread; a forged X-SOPO-Thread from anyone else is not.
-    thread_id = headers.get(THREAD_HEADER.lower()) if sender == cfg.agent_address else None
-    if thread_id and db.thread_source(thread_id) != db.LIVE_SOURCE:
-        thread_id = None
+def _store_internal(roles: list[str], thread_id: str | None, sender: str, cfg: LiveConfig,
+                    subject: str, body: str) -> None:
     with db.get_conn() as conn:
         for role in roles:
             conn.execute(
@@ -148,6 +154,15 @@ def _internal_email(cfg: LiveConfig, email_id: str, usage_id: int, roles: list[s
                 (role, thread_id, sender, cfg.am_address if role == "AM" else cfg.eng_address,
                  subject, body, db.now_iso()),
             )
+
+
+def _internal_email(cfg: LiveConfig, email_id: str, usage_id: int, roles: list[str],
+                    headers: dict[str, str], sender: str, subject: str, body: str) -> None:
+    # Only our own agent's mail is tied to a tester's thread; a forged X-SOPO-Thread from anyone else is not.
+    thread_id = headers.get(THREAD_HEADER.lower()) if sender == cfg.agent_address else None
+    if thread_id and db.thread_source(thread_id) != db.LIVE_SOURCE:
+        thread_id = None
+    _store_internal(roles, thread_id, sender, cfg, subject, body)
     if thread_id:
         usage.attach(usage_id, thread_id)
     _log(email_id, sender, ",".join(roles), subject, INTERNAL,

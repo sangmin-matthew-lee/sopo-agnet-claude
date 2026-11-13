@@ -174,7 +174,7 @@ _ADDED_COLUMNS = (
     ("simulated_emails", "author", "TEXT NOT NULL DEFAULT 'agent'"),  # agent | "Sarah Kim (Account Manager)"
     ("mail_messages", "sender", "TEXT"),  # incoming customer mail: who wrote it
     ("mail_messages", "body", "TEXT"),  # ... and its cleaned text (quotes stripped), for the staff thread view
-    ("thread_vaults", "reply_address", "TEXT NOT NULL DEFAULT 'support'"),  # live: support | am | eng
+    ("mail_messages", "mailbox", "TEXT"),  # incoming: which of our addresses it was sent to (support | am | eng)
     ("thread_vaults", "paused_from", "TEXT"),  # HUMAN_HANDLING: the status to restore on hand-back
     ("thread_vaults", "human_roles", "TEXT"),  # HUMAN_HANDLING: staff who replied, e.g. "AM,ENGINEER"
 )

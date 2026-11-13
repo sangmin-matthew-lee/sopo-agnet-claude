@@ -340,3 +340,58 @@ def test_pipeline_crash_fails_closed(client, resend, monkeypatch):
 def test_inbound_claim_is_atomic(db_path):
     assert inbound.claim("svix:x") is True
     assert inbound.claim("svix:x") is False
+
+
+# ----------------------------------------------------- customer writes to am@ / eng@
+
+
+def test_tester_mail_to_am_goes_to_the_agent_and_the_am_tab(client, resend, calls):
+    _tester()
+    received(resend, "e1", to=(AM,), text="Hi Sarah, please return ORD-12345.")
+    post_event(client, "e1")
+    [c] = calls
+    assert c["thread_id"].startswith("live-") and c["source"] == "live"
+    assert threads.mailbox(c["thread_id"]) == threads.AM
+    [row] = _internal_rows()
+    assert row["role"] == "AM" and row["thread_id"] == c["thread_id"] and "please return" in row["body"]
+    assert _log("PIPELINE")[0]["recipient"] == AM
+
+
+def test_non_tester_mail_to_am_is_internal_only(client, resend, calls):
+    received(resend, "e1", sender="someone@gmail.com", to=(AM,))
+    post_event(client, "e1")
+    assert calls == [] and _internal_rows()[0]["thread_id"] is None
+
+
+def test_support_in_cc_wins(client, resend, calls):
+    _tester()
+    received(resend, "e1", to=(AM, SUPPORT))
+    post_event(client, "e1")
+    assert threads.mailbox(calls[0]["thread_id"]) == threads.SUPPORT and _internal_rows() == []
+
+
+def test_agent_answers_mail_to_am_from_am_signed_as_ai(client, resend, monkeypatch):
+    _tester()
+
+    async def fake_classify(masked, **kw):
+        return _jev()
+
+    monkeypatch.setattr(pipeline, "classify", fake_classify)
+    received(resend, "e1", to=(AM,), text="Can I get a quote for 50 controllers?", subject="Quote")
+    post_event(client, "e1")
+
+    [reply] = [m for m in resend.sent() if m["to"] == [TESTER]]
+    assert reply["from"] == f"SOPO AI Assistant <{AM}>" and reply["reply_to"] == AM
+    assert reply["subject"] == "Re: Quote" and reply["headers"]["In-Reply-To"] == "<e1@mail.gmail.com>"
+    assert "— SOPO AI Assistant, AxMatt Supply" in reply["text"]
+    assert "This reply was written by an AI agent." in reply["text"]
+
+
+def test_customer_reply_to_am_stays_in_the_thread(client, resend, calls):
+    _tester()
+    db.save_thread("live-abc", TESTER, {}, "AWAITING_CUSTOMER_INFO", source="live")
+    threads.remember("<e1@mail.gmail.com>", "live-abc", threads.IN, "Return", mailbox=threads.AM)
+    threads.remember("<sopo-1@test.example.com>", "live-abc", threads.OUT, "Re: Return")
+    received(resend, "e2", to=(AM,), headers={"In-Reply-To": "<sopo-1@test.example.com>"})
+    post_event(client, "e2")
+    assert calls[0]["thread_id"] == "live-abc"
