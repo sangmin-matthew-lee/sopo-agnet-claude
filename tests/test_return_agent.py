@@ -1,3 +1,5 @@
+import pytest
+
 from core import db
 from sop_agents.return_agent import (
     SOPSharedContext,
@@ -188,9 +190,36 @@ def test_label_not_duplicated_when_present(db_path):
     assert inbox(db_path, "CUSTOMER_INBOX")[0]["body"] == "Label: UPS-RMA-ORD-9988."
 
 
-def test_instructions_forbid_attachment_wording():
+def test_instructions_describe_the_sample_attachment():
     from sop_agents.return_agent import RETURN_AGENT_INSTRUCTIONS
-    assert "never say the label" in RETURN_AGENT_INSTRUCTIONS and "MUST contain the" in RETURN_AGENT_INSTRUCTIONS
+    assert "SAMPLE label PDF is attached" in RETURN_AGENT_INSTRUCTIONS
+    assert "not valid for shipping" in RETURN_AGENT_INSTRUCTIONS and "MUST contain the" in RETURN_AGENT_INSTRUCTIONS
+
+
+def test_approved_return_attaches_a_sample_label_pdf_for_the_customer_only(db_path):
+    ctx = ctx_for(db_path)
+    out = verify_order_and_create_label_impl(ctx, "<ORDER_TOKEN_1>", "<PART_TOKEN_1>", 1)
+    assert "pdf" not in out.lower()  # the LLM is not told about the file; no new data reaches it
+    send_return_emails_impl(ctx, "Your return", "Label: <LABEL_TOKEN_1>.", "Approved.", False)
+    [cust] = inbox(db_path, "CUSTOMER_INBOX")
+    [sop] = inbox(db_path, "SOP_EMPLOYEE_INBOX")
+    assert [a["filename"] for a in cust["attachments"]] == ["SAMPLE-return-label-ORD-9988.pdf"]
+    assert sop["attachments"] == []
+    pdf = db.get_attachment(cust["attachments"][0]["id"], db_path)
+    assert pdf["content_type"] == "application/pdf" and pdf["data"].startswith(b"%PDF")
+    assert b"SAMPLE" in pdf["data"] and b"UPS-RMA-ORD-9988" in pdf["data"]
+
+
+@pytest.mark.parametrize("email,vault", [
+    ("hacker@gmail.com", VAULT),  # spoofed
+    ("john@acmecorp.com", {"<ORDER_TOKEN_1>": "ORD-1111", "<PART_TOKEN_1>": "CD-5678"}),  # expired
+])
+def test_no_label_pdf_without_an_approved_return(db_path, email, vault):
+    ctx = ctx_for(db_path, email=email, vault=vault)
+    verify_order_and_create_label_impl(ctx, "<ORDER_TOKEN_1>", "<PART_TOKEN_1>", 1)
+    send_return_emails_impl(ctx, "Your return", "Sorry.", "Denied.", False)
+    assert ctx.label_pdf is None
+    assert all(e["attachments"] == [] for e in db.list_emails(db_path))
 
 
 def test_parallel_tool_calls_disabled():
@@ -228,7 +257,6 @@ async def test_spoof_send_first_then_verify_never_reaches_attacker(db_path):
 
 # ------------------------------------------------------- OpenAI privacy guard
 
-import pytest  # noqa: E402
 
 from sop_agents.return_agent import guard_agent_input, guard_tool_result, run_agent  # noqa: E402
 from core.jev_router import PIILeakError  # noqa: E402

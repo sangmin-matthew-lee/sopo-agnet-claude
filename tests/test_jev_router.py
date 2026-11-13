@@ -38,7 +38,7 @@ def test_path_c_return_agent():
     assert d.path == "C_RETURN_AGENT" and d.thread_status is None
 
 
-@pytest.mark.parametrize("kw", [dict(spam=0.75), dict(spam=0.99, intent="return"), dict(intent="non_sop")])
+@pytest.mark.parametrize("kw", [dict(spam=0.75), dict(spam=0.99, intent="return"), dict(spam=0.9, intent="non_sop")])
 def test_path_a_block(kw):
     d = route(result(**kw))
     assert d.path == "A_BLOCK" and d.thread_status == "BLOCKED_SPAM"
@@ -135,8 +135,25 @@ def test_reply_on_awaiting_thread_continues_even_if_non_sop():
     assert d.path == "C_RETURN_AGENT"
 
 
-def test_non_sop_without_awaiting_thread_still_blocks():
-    assert route(result(intent="non_sop", conf=0.99), awaiting_customer_info=False).path == "A_BLOCK"
+def test_non_sop_is_handed_to_a_human_not_blocked():
+    """Other legitimate business (a prospect, another department) must reach SOP, not be dropped."""
+    d = route(result(intent="non_sop", conf=0.99), awaiting_customer_info=False)
+    assert d.path == "B_ESCALATE" and d.thread_status == "ESCALATED_TO_HUMAN"
+    assert "not a return or tech support request" in d.reasons[-1]
+
+
+@pytest.mark.parametrize("intent", ["return", "tech_support", "non_sop"])
+def test_internal_sender_always_goes_to_a_human(intent):
+    d = route(result(intent=intent, conf=0.99), internal_sender=True)
+    assert d.path == "B_ESCALATE" and "internal sender" in d.reasons[0]
+    # ...even on an open thread, and spam is still blocked.
+    assert route(result(intent=intent), awaiting_customer_info=True, internal_sender=True).path == "B_ESCALATE"
+    assert route(result(intent=intent, spam=0.9), internal_sender=True).path == "A_BLOCK"
+
+
+def test_automated_message_goes_to_a_human_never_an_agent():
+    d = route(result(intent="return", conf=0.99), awaiting_customer_info=True, automated=True)
+    assert d.path == "B_ESCALATE" and "automated message" in d.reasons[0]
 
 
 @pytest.mark.parametrize("kw,path", [
