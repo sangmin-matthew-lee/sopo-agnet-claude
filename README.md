@@ -213,32 +213,32 @@ http://localhost:8080/?code=pick-any-passcode
 
 ### 🛠 기술 지원 (Tech Support Agent)
 
-| #   | 상황                                                 | 결과                                                                    | 데모 방법                                                                                           |
-| --- | ---------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| T1  | 요청한 시간이 엔지니어·AM 모두 비어 있음             | 고객에게 시간 + 링크, 엔지니어·AM에게 초대 이메일 각 1통                | Tech 프리셋 1                                                                                       |
-| T2  | 같은 스레드에서 일정 변경("그 시간 안 돼요, 대신 …") | 미팅 이동, 같은 링크, 고객, AM, 엔지니어 변경 일정 이메일 각각 1통      | 프리셋 1 → ↩ Reply in Thread(힌트 문구 사용)                                                        |
-| T3  | **새 이메일**로 일정 변경 요청                       | 기존 미팅을 찾아 이동(중복 예약 없음)                                   | 프리셋 1 Send 이후 프리셋 6 가서 Send                                                               |
-| T4  | 시간 언급 없음 → 제안 → 고객이 선택                  | 3개 옵션 제안, **에이전트가 임의로 예약하지 않음**) → 선택 후 미팅 확정 | 프리셋 2 → ↩ Reply: `Option 2 works for us.`                                                        |
-| T5  | 요청한 시간에 엔지니어가 바쁨                        | 대안 3개 제안, 엔지니어에게 연락 안 함                                  | 프리셋 3 → 원하면 ↩ Reply로 하나 선택                                                               |
-| T6  | 부품번호 누락                                        | 부품번호·희망 시간 요청 → 답장 후 예약                                  | 프리셋 4 → ↩ Reply(힌트 문구 사용)                                                                  |
-| T7  | 구매하지 않은 부품으로 미팅 요청                     | SOP AM에게 `[SECURITY]` 경고, 예약·엔지니어 연락 없음                   | 프리셋 5                                                                                            |
-| T8  | 존재하지 않는 부품번호                               | 부품번호 재확인 요청                                                    | 직접 입력: john@ → `Our ZZ-0000 unit is failing, can an engineer help?`                             |
-| T9  | 제안 시간이 계속 안 맞음(3회 초과)                   | 4번째 조율 메일 대신 AM에게 이관 + 고객 안내                            | 프리셋 2 → ↩ Reply `None of those work, other times?`를 3번(세 번째 답장에서 이관)                  |
-| T10 | 이미 예약된 고객·부품으로 새 미팅 요청               | 새로 예약하지 않고 기존 미팅 안내(고객·부품당 1개)                      | 프리셋 1 이후 프리셋 2 보내기(프리셋 1은 특정 시간을 말하므로 일정 변경으로 처리될 수 있음)         |
-| T11 | 1순위 엔지니어가 바쁘면 2순위 배정                   | AB-1234: Alex가 바쁜 시간이면 Priya에게 초대                            | 프리셋 1의 시간을 **다음 영업일 오전 10:30**으로 바꿔 보내기(Alex는 바쁘고 Priya·Sarah는 비어 있음) |
-| T12 | 화난 고객 / 스팸 (기술 문의라도)                     | 사람 이관 / 차단 (반품과 같은 안전 규칙)                                | 직접 입력: 대문자로 항의하는 기술 문의                                                              |
-| T13 | 구매 이력이 전혀 없는 사람(잠재 고객)의 기술 문의          | 일반 이관 + "담당 팀" 안내 메일, `[SECURITY]`·잠금 없음, 엔지니어 연락 없음 | 직접 입력: `buyer@newprospect.com` → `Can an engineer walk us through AB-1234 before we buy?` |
+| #   | 상황                                                 | 결과                                                                        | 데모 방법                                                                                           |
+| --- | ---------------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| T1  | 요청한 시간이 엔지니어·AM 모두 비어 있음             | 고객에게 시간 + 링크, 엔지니어·AM에게 초대 이메일 각 1통                    | Tech 프리셋 1                                                                                       |
+| T2  | 같은 스레드에서 일정 변경("그 시간 안 돼요, 대신 …") | 미팅 이동, 같은 링크, 고객, AM, 엔지니어 변경 일정 이메일 각각 1통          | 프리셋 1 → ↩ Reply in Thread(힌트 문구 사용)                                                        |
+| T3  | **새 이메일**로 일정 변경 요청                       | 기존 미팅을 찾아 이동(중복 예약 없음)                                       | 프리셋 1 Send 이후 프리셋 6 가서 Send                                                               |
+| T4  | 시간 언급 없음 → 제안 → 고객이 선택                  | 3개 옵션 제안, **에이전트가 임의로 예약하지 않음**) → 선택 후 미팅 확정     | 프리셋 2 → ↩ Reply: `Option 2 works for us.`                                                        |
+| T5  | 요청한 시간에 엔지니어가 바쁨                        | 대안 3개 제안, 엔지니어에게 연락 안 함                                      | 프리셋 3 → 원하면 ↩ Reply로 하나 선택                                                               |
+| T6  | 부품번호 누락                                        | 부품번호·희망 시간 요청 → 답장 후 예약                                      | 프리셋 4 → ↩ Reply(힌트 문구 사용)                                                                  |
+| T7  | 구매하지 않은 부품으로 미팅 요청                     | SOP AM에게 `[SECURITY]` 경고, 예약·엔지니어 연락 없음                       | 프리셋 5                                                                                            |
+| T8  | 존재하지 않는 부품번호                               | 부품번호 재확인 요청                                                        | 직접 입력: john@ → `Our ZZ-0000 unit is failing, can an engineer help?`                             |
+| T9  | 제안 시간이 계속 안 맞음(3회 초과)                   | 4번째 조율 메일 대신 AM에게 이관 + 고객 안내                                | 프리셋 2 → ↩ Reply `None of those work, other times?`를 3번(세 번째 답장에서 이관)                  |
+| T10 | 이미 예약된 고객·부품으로 새 미팅 요청               | 새로 예약하지 않고 기존 미팅 안내(고객·부품당 1개)                          | 프리셋 1 이후 프리셋 2 보내기(프리셋 1은 특정 시간을 말하므로 일정 변경으로 처리될 수 있음)         |
+| T11 | 1순위 엔지니어가 바쁘면 2순위 배정                   | AB-1234: Alex가 바쁜 시간이면 Priya에게 초대                                | 프리셋 1의 시간을 **다음 영업일 오전 10:30**으로 바꿔 보내기(Alex는 바쁘고 Priya·Sarah는 비어 있음) |
+| T12 | 화난 고객 / 스팸 (기술 문의라도)                     | 사람 이관 / 차단 (반품과 같은 안전 규칙)                                    | 직접 입력: 대문자로 항의하는 기술 문의                                                              |
+| T13 | 구매 이력이 전혀 없는 사람(잠재 고객)의 기술 문의    | 일반 이관 + "담당 팀" 안내 메일, `[SECURITY]`·잠금 없음, 엔지니어 연락 없음 | 직접 입력: `buyer@newprospect.com` → `Can an engineer walk us through AB-1234 before we buy?`       |
 
 ### 📨 그 외 메일 (사람에게 이관)
 
 반품·기술 지원이 아닌 메일은 스팸이 아니면 버리지 않고 모두 SOP로 넘깁니다. 에이전트·OpenAI는 쓰지 않습니다.
 
-| #   | 상황                                          | 결과                                                                                   | 데모 방법                                                                                                   |
-| --- | --------------------------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| O1  | 신규 고객의 구매·견적 문의                    | `ESCALATED_TO_HUMAN`, SOP에 `[ESCALATION] Other inquiry … (no previous orders)`, "담당 팀" 안내 메일 | 직접 입력: `buyer@newprospect.com` → `We're a new company interested in buying 50 AB-1234 units. Can we get a quote?` |
-| O2  | 기존 고객의 기타 문의(추가 주문 견적 등)      | SOP 이관, 기존 "AM" 안내 메일                                                            | 직접 입력: john@ → `Could you send me a quote for 10 more AB-1234 units?`                                   |
-| O3  | 사내 직원·타 부서 메일                        | SOP에 `[INTERNAL]`, 안내 메일 없음, 반품·예약 같은 처리 없음                               | 직접 입력: `priya.patel@axmattsupply.com` → `FYI: a customer called about returning AB-1234, can someone check?` |
-| O4  | 자동 응답·`no-reply`·반송 메일                | SOP에 `[LOW PRIORITY]`, 답장 없음(메일 루프 방지), 열려 있던 스레드 상태는 유지             | 직접 입력: john@ → `Automatic reply: I am out of the office until Monday.`                                  |
+| #   | 상황                                     | 결과                                                                                                 | 데모 방법                                                                                                             |
+| --- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| O1  | 신규 고객의 구매·견적 문의               | `ESCALATED_TO_HUMAN`, SOP에 `[ESCALATION] Other inquiry … (no previous orders)`, "담당 팀" 안내 메일 | 직접 입력: `buyer@newprospect.com` → `We're a new company interested in buying 50 AB-1234 units. Can we get a quote?` |
+| O2  | 기존 고객의 기타 문의(추가 주문 견적 등) | SOP 이관, 기존 "AM" 안내 메일                                                                        | 직접 입력: john@ → `Could you send me a quote for 10 more AB-1234 units?`                                             |
+| O3  | 사내 직원·타 부서 메일                   | SOP에 `[INTERNAL]`, 안내 메일 없음, 반품·예약 같은 처리 없음                                         | 직접 입력: `priya.patel@axmattsupply.com` → `FYI: a customer called about returning AB-1234, can someone check?`      |
+| O4  | 자동 응답·`no-reply`·반송 메일           | SOP에 `[LOW PRIORITY]`, 답장 없음(메일 루프 방지), 열려 있던 스레드 상태는 유지                      | 직접 입력: john@ → `Automatic reply: I am out of the office until Monday.`                                            |
 
 </details>
 
@@ -268,40 +268,50 @@ http://localhost:8080/?code=pick-any-passcode
 
 ### B. 🛠 Tech Support 탭
 
-| 순서 | 할 일                                                                                             | 기대 결과                                                                           | 케이스 |
-| ---- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------ |
-| 13   | **Reset DB** → 탭 전환 → 프리셋 **5 · Not the Owner**                                             | `ESCALATED_TO_HUMAN`, `[SECURITY]`, `ENGINEER_INBOX` 비어 있음                      | T7     |
-| 14   | 직접 입력(T8 `ZZ-0000`)                                                                           | 부품번호 재확인 요청                                                                | T8     |
-| 15   | 프리셋 **3 · Engineer Busy** (Mary)                                                               | 대안 3개 제안, Marco에게 메일 없음                                                  | T5     |
-| 16   | 15번 고객 메일에 **↩ Reply** `Option 1 works.`                                                    | `MEETING_CONFIRMED`, Marco·David에게 초대장 각 1통                                  | T5     |
-| 17   | 프리셋 **2 · No Times Given**                                                                     | `AWAITING_CUSTOMER_SCHEDULE`, 3개 제안, **예약 안 됨**                              | T4     |
-| 18   | 17번 스레드에 **↩ Reply** `None of those work, other times?`를 3번                                | 첫째·둘째 답장에는 새 제안, 셋째 답장에서 AM 이관 + 고객 안내(`ESCALATED_TO_HUMAN`) | T9     |
-| 19   | **Reset DB** → 프리셋 **4 · Missing Part Number** → ↩ Reply(힌트 문구: 부품 + 시간)               | 부품 요청 → `MEETING_CONFIRMED`                                                     | T6     |
-| 20   | 프리셋 **2 · No Times Given** (같은 John·AB-1234)                                                 | 새로 잡지 않고 19번 미팅 안내                                                       | T10    |
-| 21   | **Reset DB** → 프리셋 **2** → ↩ Reply `Option 2 works for us.`                                    | 제안 → 선택한 시간으로 `MEETING_CONFIRMED`                                          | T4     |
+| 순서 | 할 일                                                                                                                                                            | 기대 결과                                                                           | 케이스 |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------ |
+| 13   | **Reset DB** → 탭 전환 → 프리셋 **5 · Not the Owner**                                                                                                            | `ESCALATED_TO_HUMAN`, `[SECURITY]`, `ENGINEER_INBOX` 비어 있음                      | T7     |
+| 14   | 직접 입력(T8 `ZZ-0000`)                                                                                                                                          | 부품번호 재확인 요청                                                                | T8     |
+| 15   | 프리셋 **3 · Engineer Busy** (Mary)                                                                                                                              | 대안 3개 제안, Marco에게 메일 없음                                                  | T5     |
+| 16   | 15번 고객 메일에 **↩ Reply** `Option 1 works.`                                                                                                                   | `MEETING_CONFIRMED`, Marco·David에게 초대장 각 1통                                  | T5     |
+| 17   | 프리셋 **2 · No Times Given**                                                                                                                                    | `AWAITING_CUSTOMER_SCHEDULE`, 3개 제안, **예약 안 됨**                              | T4     |
+| 18   | 17번 스레드에 **↩ Reply** `None of those work, other times?`를 3번                                                                                               | 첫째·둘째 답장에는 새 제안, 셋째 답장에서 AM 이관 + 고객 안내(`ESCALATED_TO_HUMAN`) | T9     |
+| 19   | **Reset DB** → 프리셋 **4 · Missing Part Number** → ↩ Reply(힌트 문구: 부품 + 시간)                                                                              | 부품 요청 → `MEETING_CONFIRMED`                                                     | T6     |
+| 20   | 프리셋 **2 · No Times Given** (같은 John·AB-1234)                                                                                                                | 새로 잡지 않고 19번 미팅 안내                                                       | T10    |
+| 21   | **Reset DB** → 프리셋 **2** → ↩ Reply `Option 2 works for us.`                                                                                                   | 제안 → 선택한 시간으로 `MEETING_CONFIRMED`                                          | T4     |
 | 22   | 21번 확인 메일에 **↩ Reply** `Sorry, that time no longer works. Could we do <다른 시간> instead?` (`<다른 시간>`은 ③ 캘린더에서 엔지니어·AM 모두 비어 있는 시간) | 미팅 이동, 같은 링크, `[Updated invite]` 각 1통, ③ 캘린더 갱신                      | T2     |
-| 23   | 프리셋 **6 · Reschedule (New Email)**                                                             | 새 스레드가 기존 미팅을 찾아 이동, 중복 예약 없음                                   | T3     |
-| 24   | **Reset DB** → 프리셋 **1 · Happy Path**                                                          | `MEETING_CONFIRMED`, 초대장 각 1통                                                  | T1     |
-| 25   | (선택) Reset DB → 프리셋 1의 시간을 **다음 영업일 오전 10:30**으로 바꿔 Send                      | Priya에게 초대(Alex는 그 시간 고객 방문)                                            | T11    |
-| 26   | (선택) 화가 난 기술 문의를 직접 입력                                                              | `ESCALATED_TO_HUMAN`                                                                | T12    |
+| 23   | 프리셋 **6 · Reschedule (New Email)**                                                                                                                            | 새 스레드가 기존 미팅을 찾아 이동, 중복 예약 없음                                   | T3     |
+| 24   | **Reset DB** → 프리셋 **1 · Happy Path**                                                                                                                         | `MEETING_CONFIRMED`, 초대장 각 1통                                                  | T1     |
+| 25   | (선택) Reset DB → 프리셋 1의 시간을 **다음 영업일 오전 10:30**으로 바꿔 Send                                                                                     | Priya에게 초대(Alex는 그 시간 고객 방문)                                            | T11    |
+| 26   | (선택) 화가 난 기술 문의를 직접 입력                                                                                                                             | `ESCALATED_TO_HUMAN`                                                                | T12    |
 
 > 고객·부품당 예정 미팅은 1개만 허용됩니다. 그래서 같은 John·AB-1234 미팅을 새로 잡아야 하는 단계 앞에는 > **Reset DB**가 있습니다.
 
 ### C. 📨 그 외 메일 (선택)
 
-| 순서 | 할 일                                       | 기대 결과                                                                 | 케이스 |
-| ---- | ------------------------------------------- | ------------------------------------------------------------------------- | ------ |
+| 순서 | 할 일                                            | 기대 결과                                                                        | 케이스 |
+| ---- | ------------------------------------------------ | -------------------------------------------------------------------------------- | ------ |
 | 27   | **Reset DB** → 직접 입력(O1 신규 고객 견적 문의) | `ESCALATED_TO_HUMAN`, SOP 알림에 `(no previous orders)`, 고객에게 "담당 팀" 안내 | O1     |
-| 28   | 직접 입력(O3 사내 직원 메일)                | SOP에 `[INTERNAL]`, `CUSTOMER_INBOX` 안내 메일 없음                       | O3     |
-| 29   | 직접 입력(O4 자동 응답)                     | SOP에 `[LOW PRIORITY]`, 답장 없음                                         | O4     |
-| 30   | 직접 입력(T13 잠재 고객의 기술 문의)        | 일반 이관, `[SECURITY]` 없음, `ENGINEER_INBOX` 비어 있음                  | T13    |
+| 28   | 직접 입력(O3 사내 직원 메일)                     | SOP에 `[INTERNAL]`, `CUSTOMER_INBOX` 안내 메일 없음                              | O3     |
+| 29   | 직접 입력(O4 자동 응답)                          | SOP에 `[LOW PRIORITY]`, 답장 없음                                                | O4     |
+| 30   | 직접 입력(T13 잠재 고객의 기술 문의)             | 일반 이관, `[SECURITY]` 없음, `ENGINEER_INBOX` 비어 있음                         | T13    |
 
 </details>
 
 <details>
 <summary><b>7. 실제 이메일 테스트 모드 (Resend)</b></summary>
 
-외부 테스터가 **자기 개인 메일**로 `support@<TEST_DOMAIN>`에 메일을 보내고, 에이전트의 답장을 **같은 스레드로** 받는 클로즈드 베타 모드입니다([Resend](https://resend.com) 무료 플랜 사용). 도메인·webhook·환경변수 설정, Cloud Run 배포, 테스트 종료 후 정리는 [docs/README.ko.backup.md](docs/README.ko.backup.md)의 7번을 참고하세요.
+외부 테스터가 **자기 개인 메일**로 `support@<TEST_DOMAIN>`에 메일을 보내고, 에이전트의 답장을 **같은 스레드로** 받는 클로즈드 베타 모드입니다.
+
+```
+테스터 개인 메일 ──▶ support@test.example.com ──(MX)──▶ Resend ──webhook──▶ POST /webhook/resend
+                                                                              │ 서명 검증 · 중복 차단 · 허용 목록
+                                                                              ▼
+                                                     Receiving API로 본문 조회 → 기존 파이프라인
+                                                                              │
+테스터 메일함 ◀── Re: 원래 제목 (같은 스레드) ◀── Resend 발송 ◀──────────────────┤
+am@ / eng@   ◀── X-SOPO-Thread 헤더 ◀───────────────────────────────────────────┘ → 다시 수신되어 테스터 페이지의 AM/엔지니어 탭에 표시
+```
 
 ### 1) 테스터 초대
 
