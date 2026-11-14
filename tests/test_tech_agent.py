@@ -378,6 +378,46 @@ def test_confirmation_unmasks_link_and_appends_if_missing(db_path):
     assert ctx.thread_status == "MEETING_CONFIRMED"
 
 
+def test_plain_confirmation_on_a_booked_meeting_needs_no_calendar_check(db_path):
+    """Live test: "I will be attending" was blocked, so the agent re-checked and offered new times."""
+    free = slots(db_path)["free_slot"]["iso"]
+    link = book(db_path, free).vault["<LINK_TOKEN_1>"]
+    ctx = ctx_for(db_path)  # a new run: no availability check yet
+    out = send_tech_support_emails_impl(ctx, "Re: meeting", "Great, see you then.", "", False)
+    assert out.startswith("SENT: 1") and ctx.thread_status == "MEETING_CONFIRMED"
+    assert link in inbox(db_path, "CUSTOMER_INBOX")[-1]["body"]
+    assert db.get_tech_schedule("t1", db_path)["status"] == "CONFIRMED"
+    # Offering times still needs a real check.
+    out = send_tech_support_emails_impl(ctx_for(db_path), "Times", "How about Monday?", "", True)
+    assert out.startswith("BLOCKED")
+
+
+def test_earlier_offers_survive_a_booking_and_can_still_be_picked(db_path):
+    """Live test: offers were sent, the customer moved the meeting by another email, then replied
+    "Tuesday works" to the older offer. The offer must still be known and bookable."""
+    free = slots(db_path)["free_slot"]["iso"]
+    book(db_path, free)
+    ctx = ctx_for(db_path)
+    check_meeting_availability_impl(ctx, "<PART_TOKEN_1>", [], reschedule=True)
+    offered = db.get_tech_schedule("t1", db_path)["offered_slots"]
+    send_tech_support_emails_impl(ctx, "New times", "Which works?", "", True)
+
+    # Another email moves the meeting to offered[1] first.
+    ctx = ctx_for(db_path)
+    assert check_meeting_availability_impl(ctx, "<PART_TOKEN_1>", [offered[1]], reschedule=True).startswith("AVAILABLE")
+    assert book_tech_meeting_impl(ctx, "<PART_TOKEN_1>", offered[1]).startswith("RESCHEDULED")
+    kept = db.get_tech_schedule("t1", db_path)["offered_slots"]
+    assert kept == [offered[0], offered[2]]
+    text = build_tech_agent_input("Tuesday works.", VAULT, sch.now_local(), db.get_tech_schedule("t1", db_path))
+    assert "offered earlier, before the current booking" in text
+
+    # The late pick of an earlier offer moves the meeting again.
+    ctx = ctx_for(db_path)
+    assert check_meeting_availability_impl(ctx, "<PART_TOKEN_1>", [offered[0]], reschedule=True).startswith("AVAILABLE")
+    assert book_tech_meeting_impl(ctx, "<PART_TOKEN_1>", offered[0]).startswith("RESCHEDULED")
+    assert db.get_tech_schedule("t1", db_path)["offered_slots"] == [offered[2]]
+
+
 def test_round_limit_escalates_instead_of_asking_again(db_path):
     db.save_tech_schedule("t1", "john@acmecorp.com", db_path, rounds=MAX_SCHEDULING_ROUNDS, part_number="AB-1234")
     ctx = ctx_for(db_path)

@@ -540,12 +540,14 @@ def book_tech_meeting_impl(ctx: TechSupportContext, part_token: str, start: str)
     ctx.thread_status = MEETING_CONFIRMED
     ctx.bookable_slots.clear()
     issue = (sched or {}).get("issue_text") or ctx.customer_message
+    # Keep the other offers: a customer may still pick one in a reply to an older email.
+    earlier = [s for s in (sched or {}).get("offered_slots", []) if s != sch.iso_local(slot)]
     _schedule(
         ctx,
         engineer_email=engineer,
         meeting_start=sch.to_utc_iso(slot),
         meeting_link=link,
-        offered_slots=[],
+        offered_slots=earlier,
         rounds=0,
         status="CONFIRMED",
     )  # a later reschedule gets fresh rounds
@@ -680,17 +682,21 @@ def send_tech_support_emails_impl(
             "SKIPPED: this thread was handed to a human; no emails were sent.",
         )
 
-    # Never email a sender about a part before the ownership/calendar check has run.
-    if not ctx.availability_checked and tokens_of(ctx.vault, "PART"):
-        ctx.log("guard", rule="check_before_send", local_only=True)
-        return _result(
-            ctx,
-            tool,
-            "BLOCKED: a part token is known, so call check_meeting_availability first. "
-            "No emails were sent.",
-        )
-
     sched = db.get_tech_schedule(ctx.thread_id, ctx.db_path)
+    # Never email a sender about a part before the ownership/calendar check has run. Exception: a plain
+    # reply ("see you then") on a thread whose meeting is already booked; ownership was verified then.
+    if not ctx.availability_checked and tokens_of(ctx.vault, "PART"):
+        booked = None if awaiting_customer else _existing_booking(ctx, sched)
+        if booked is None:
+            ctx.log("guard", rule="check_before_send", local_only=True)
+            return _result(
+                ctx,
+                tool,
+                "BLOCKED: a part token is known, so call check_meeting_availability first. "
+                "No emails were sent.",
+            )
+        ctx.log("guard", rule="check_before_send", allowed="meeting already booked", local_only=True)
+
     rounds = (sched or {}).get("rounds", 0)
     if awaiting_customer and rounds >= MAX_SCHEDULING_ROUNDS:
         ctx.log("guard", rule="max_scheduling_rounds", rounds=rounds, local_only=True)
@@ -828,9 +834,18 @@ customer asked for ("Thursday 2pm", "the 12th at 10:30") into local ISO datetime
 If the customer picks one of the slots offered earlier ("option 2 works"), use that exact slot.
 
 Procedure:
+0. If a meeting is already booked and the customer only confirms, thanks or acknowledges it ("I will be
+   attending", "see you then", "thanks"), do NOT check calendars or offer times: call
+   send_tech_support_emails once (awaiting_customer=false, sop_summary="") with a short reply confirming the
+   booked date, time and timezone and the meeting link token, then stop.
 1. Call check_meeting_availability once with the part token (or "" if none is known), the times the customer
-   asked for (or []), and reschedule=true if they want to change, move or can't make a meeting that is
-   already booked (otherwise false). It may find their existing meeting even if this is a new email.
+   asked for (or []), and reschedule=true ONLY if they say the booked time doesn't work or ask to change or
+   move it (otherwise false). It may find their existing meeting even if this is a new email.
+   If a meeting is booked and the customer picks one of the "slots offered earlier, before the current
+   booking" (e.g. "Tuesday works" when one Tuesday slot was offered), that is a request to move the meeting
+   to that slot: pass it in requested_starts with reschedule=true. If their pick matches more than one
+   offered slot, don't check: ask which one they mean (awaiting_customer=false) and remind them of the
+   currently booked time.
 2. Act on its result:
    - AVAILABLE: call book_tech_meeting with that start time.
    - UNAVAILABLE or NO_TIME_REQUESTED: call send_tech_support_emails with awaiting_customer=true. If their
@@ -849,6 +864,8 @@ Procedure:
    and the meeting link token verbatim.
 4. Never email or ask the engineer anything; invites and updates are sent automatically when you book. Call
    send_tech_support_emails at most once. Finish with one short sentence describing what you did.
+Start customer emails with "Hi," and no name. Names in the customer's email are usually our staff
+(e.g. "Hi Sarah"); never greet the customer with them.
 Sign customer emails as "Sales Operations Team".
 """
 
@@ -886,9 +903,11 @@ def build_tech_agent_input(
         f"Known PART tokens in this thread: {', '.join(parts) if parts else 'none'}",
     ]
     offered = (sched or {}).get("offered_slots") or []
+    booked = _booked_start(sched, now)
     if offered:
         lines.append(
-            "Slots offered to this customer previously: "
+            ("Slots offered earlier, before the current booking: " if booked
+             else "Slots offered to this customer previously: ")
             + "; ".join(
                 _slot_line(i, sch.parse_slot(s, now))
                 if _valid(s, now)
@@ -896,7 +915,6 @@ def build_tech_agent_input(
                 for i, s in enumerate(offered, 1)
             )
         )
-    booked = _booked_start(sched, now)
     if booked:
         lines.append(
             f"A meeting is already booked on this thread for {sch.iso_local(booked)} "

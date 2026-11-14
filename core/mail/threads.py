@@ -23,15 +23,16 @@ def normalize(message_id: str | None) -> str | None:
 
 
 def remember(message_id: str, thread_id: str, direction: str, subject: str | None, db_path: str | None = None,
-             *, sender: str | None = None, body: str | None = None, mailbox: str | None = None) -> None:
+             *, sender: str | None = None, body: str | None = None, mailbox: str | None = None,
+             sender_name: str | None = None) -> None:
     """Record a Message-ID of this thread. Incoming customer mail also keeps its sender, cleaned text and
     the mailbox it was sent to."""
     with db.get_conn(db_path) as conn:
         conn.execute(
             """INSERT OR IGNORE INTO mail_messages
-               (rfc_message_id, thread_id, direction, subject, created_at, sender, body, mailbox)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (message_id, thread_id, direction, subject, db.now_iso(), sender, body, mailbox),
+               (rfc_message_id, thread_id, direction, subject, created_at, sender, body, mailbox, sender_name)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (message_id, thread_id, direction, subject, db.now_iso(), sender, body, mailbox, sender_name),
         )
 
 
@@ -47,6 +48,17 @@ def mailbox(thread_id: str, db_path: str | None = None) -> str:
             (thread_id,),
         ).fetchone()
     return row["mailbox"] if row else SUPPORT
+
+
+def customer_name(thread_id: str, db_path: str | None = None) -> str | None:
+    """The From display name of the customer's latest email on this thread (live mail only)."""
+    with db.get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT sender_name FROM mail_messages WHERE thread_id = ? AND direction = 'IN' "
+            "AND sender_name IS NOT NULL AND sender_name != '' ORDER BY rowid DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+    return row["sender_name"] if row else None
 
 
 def find_thread(ids: list[str], db_path: str | None = None, *, owner: str | None = None) -> str | None:

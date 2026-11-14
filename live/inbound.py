@@ -22,6 +22,14 @@ PIPELINE, INTERNAL, IGNORED = "PIPELINE", "INTERNAL", "IGNORED"
 _DAEMON_RE = re.compile(r"^(mailer-daemon|postmaster)$", re.IGNORECASE)
 MAX_BODY = 10_000  # same cap as /api/simulate-email
 
+# One email at a time per thread: two replies sent seconds apart must not run the agent concurrently
+# (double booking, crossed replies). In-process is enough: Cloud Run runs a single instance.
+_thread_locks: dict[str, asyncio.Lock] = {}
+
+
+def thread_lock(thread_id: str) -> asyncio.Lock:
+    return _thread_locks.setdefault(thread_id, asyncio.Lock())
+
 
 def claim(event_key: str, db_path: str | None = None) -> bool:
     """Atomically mark a webhook event / email / Message-ID as seen. False if it was already seen."""
@@ -125,12 +133,17 @@ async def _customer_email(cfg: LiveConfig, email_id: str, usage_id: int, full: d
     thread_id = threads.find_thread(refs, owner=sender) or f"live-{uuid.uuid4().hex[:12]}"
     message_id = message_id or f"<resend-{email_id}@{cfg.test_domain or 'localhost'}>"
     threads.remember(message_id, thread_id, threads.IN, subject, sender=sender, body=preprocess_email(body),
-                     mailbox=mailbox)
+                     mailbox=mailbox, sender_name=parseaddr(str(full.get("from") or ""))[0] or None)
     usage.attach(usage_id, thread_id)
     if staff_roles:  # the AM / engineer tab shows what the customer sent them
         _store_internal(staff_roles, thread_id, sender, cfg, subject, body)
     _log(email_id, sender, to, subject, PIPELINE, "new thread" if not refs else "reply", thread_id)
 
+    async with thread_lock(thread_id):
+        await _run_pipeline(sender, thread_id, message_id, body)
+
+
+async def _run_pipeline(sender: str, thread_id: str, message_id: str, body: str) -> None:
     try:
         await pipeline.process_email(sender, thread_id, message_id, body or "(empty email)", source=db.LIVE_SOURCE)
     except Exception as exc:  # fail closed: a person takes over
