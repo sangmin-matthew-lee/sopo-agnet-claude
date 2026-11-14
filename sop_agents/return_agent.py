@@ -472,6 +472,8 @@ Procedure:
    - NOT_FOUND or MISSING_INFO: call send_return_emails with request_missing_info=true.
    - REJECTED: do nothing else.
 5. Call send_return_emails at most once. Finish with one short sentence describing what you did.
+Start customer emails with "Hi," and no name. Names in the customer's email are usually our staff
+(e.g. "Hi Sarah"); never greet the customer with them.
 Sign customer emails as "Sales Operations Team".
 """
 

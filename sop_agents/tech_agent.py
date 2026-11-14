@@ -864,6 +864,8 @@ Procedure:
    and the meeting link token verbatim.
 4. Never email or ask the engineer anything; invites and updates are sent automatically when you book. Call
    send_tech_support_emails at most once. Finish with one short sentence describing what you did.
+Start customer emails with "Hi," and no name. Names in the customer's email are usually our staff
+(e.g. "Hi Sarah"); never greet the customer with them.
 Sign customer emails as "Sales Operations Team".
 """
 

@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 from core import db
+from core.mail import threads
 from core.mail.base import AGENT, SENT, SIMULATED, Attachment, MailTransport, OutboundEmail, SendResult
+from core.mail.greeting import first_name, fix_greeting
 from core.mail.resend import ResendTransport
 from core.mail.simulated import SimulatedTransport
 
@@ -45,6 +47,8 @@ def send(
     Raises MailNotSent if a live email wasn't delivered, so an agent run stops and the pipeline
     fails closed. Escalations pass best_effort=True: they are logged locally even if not delivered.
     """
+    if inbox_type == "CUSTOMER_INBOX" and author == AGENT:  # staff replies keep their own greeting
+        body = fix_greeting(body, first_name(threads.customer_name(thread_id, db_path)))
     email = OutboundEmail(thread_id, inbox_type, recipient, subject, body, author, attachments)
     result = transport_for(thread_id, db_path).send(email, db_path)
     if result.status not in (SENT, SIMULATED) and not best_effort:

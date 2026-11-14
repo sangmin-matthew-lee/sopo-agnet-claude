@@ -175,6 +175,7 @@ _ADDED_COLUMNS = (
     ("mail_messages", "sender", "TEXT"),  # incoming customer mail: who wrote it
     ("mail_messages", "body", "TEXT"),  # ... and its cleaned text (quotes stripped), for the staff thread view
     ("mail_messages", "mailbox", "TEXT"),  # incoming: which of our addresses it was sent to (support | am | eng)
+    ("mail_messages", "sender_name", "TEXT"),  # incoming: From display name, for the greeting (never sent to AI)
     ("thread_vaults", "paused_from", "TEXT"),  # HUMAN_HANDLING: the status to restore on hand-back
     ("thread_vaults", "human_roles", "TEXT"),  # HUMAN_HANDLING: staff who replied, e.g. "AM,ENGINEER"
 )

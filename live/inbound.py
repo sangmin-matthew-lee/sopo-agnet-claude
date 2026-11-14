@@ -133,7 +133,7 @@ async def _customer_email(cfg: LiveConfig, email_id: str, usage_id: int, full: d
     thread_id = threads.find_thread(refs, owner=sender) or f"live-{uuid.uuid4().hex[:12]}"
     message_id = message_id or f"<resend-{email_id}@{cfg.test_domain or 'localhost'}>"
     threads.remember(message_id, thread_id, threads.IN, subject, sender=sender, body=preprocess_email(body),
-                     mailbox=mailbox)
+                     mailbox=mailbox, sender_name=parseaddr(str(full.get("from") or ""))[0] or None)
     usage.attach(usage_id, thread_id)
     if staff_roles:  # the AM / engineer tab shows what the customer sent them
         _store_internal(staff_roles, thread_id, sender, cfg, subject, body)

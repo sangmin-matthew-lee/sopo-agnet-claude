@@ -423,3 +423,22 @@ async def test_replies_on_one_thread_are_processed_one_at_a_time(client, resend,
     await asyncio.gather(inbound.handle("e2", 0), inbound.handle("e3", 0))
     assert len(set(threads_seen)) == 1 and len(threads_seen) == 3
     assert max(overlap) == 1
+
+
+def test_reply_greets_the_customer_not_the_account_manager(client, resend, monkeypatch):
+    """Live test: Matthew wrote "Hi Sarah," to am@ and the agent's reply opened with "Hi Sarah,"."""
+    from core import mail
+
+    _tester()
+
+    async def agent_copies_the_greeting(sender, thread_id, message_id, body, emit=None, source="simulated"):
+        db.save_thread(thread_id, sender, {}, "PROCESSING", source=db.LIVE_SOURCE)
+        mail.send(thread_id, "CUSTOMER_INBOX", sender, "Re: Return", "Hi Sarah,\n\nYour return label is ready.")
+        return {"status": "OK", "trace": []}
+
+    monkeypatch.setattr(pipeline, "process_email", agent_copies_the_greeting)
+    received(resend, "e1", to=(AM,), text="Hi Sarah,\n\nCould you help me return UG-4813?")
+    resend.received["e1"]["from"] = f"Matthew Lee <{TESTER}>"
+    post_event(client, "e1")
+    [reply] = [m for m in resend.sent() if m["to"] == [TESTER]]
+    assert reply["text"].startswith("Hi Matthew,\n\nYour return label is ready.")
