@@ -395,3 +395,31 @@ def test_customer_reply_to_am_stays_in_the_thread(client, resend, calls):
     received(resend, "e2", to=(AM,), headers={"In-Reply-To": "<sopo-1@test.example.com>"})
     post_event(client, "e2")
     assert calls[0]["thread_id"] == "live-abc"
+
+
+async def test_replies_on_one_thread_are_processed_one_at_a_time(client, resend, monkeypatch):
+    """Two replies sent seconds apart must not run the pipeline for the same thread concurrently."""
+    import asyncio
+
+    _tester()
+    running, overlap, threads_seen = 0, [], []
+
+    async def slow(sender, thread_id, message_id, body, emit=None, source="simulated"):
+        nonlocal running
+        running += 1
+        overlap.append(running)
+        threads_seen.append(thread_id)
+        if db.load_thread(thread_id) is None:
+            db.save_thread(thread_id, sender, {}, "PROCESSING", source=db.LIVE_SOURCE)
+        await asyncio.sleep(0.05)
+        running -= 1
+        return {"status": "OK", "trace": []}
+
+    monkeypatch.setattr(pipeline, "process_email", slow)
+    received(resend, "e1", message_id="<first@mail.gmail.com>")
+    await inbound.handle("e1", 0)
+    for eid in ("e2", "e3"):
+        received(resend, eid, text="Tuesday works.", headers={"In-Reply-To": "<first@mail.gmail.com>"})
+    await asyncio.gather(inbound.handle("e2", 0), inbound.handle("e3", 0))
+    assert len(set(threads_seen)) == 1 and len(threads_seen) == 3
+    assert max(overlap) == 1

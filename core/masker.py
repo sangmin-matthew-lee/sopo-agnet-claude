@@ -19,9 +19,10 @@ _STYLE_SCRIPT_RE = re.compile(
     r"<(style|script)[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL
 )
 
-# Reply headers: everything from here down is the quoted previous message.
+# Reply headers: everything from here down is the quoted previous message. Gmail wraps a long
+# "On <date> <name> <addr> wrote:" over two lines.
 _REPLY_HEADER_RE = re.compile(
-    r"^\s*(On\s.+wrote:\s*$|-{2,}\s*Original Message\s*-{2,}|From:\s.+$)",
+    r"^\s*(On\s[^\n]*?(?:\n[^\n]*?)?wrote:\s*$|-{2,}\s*Original Message\s*-{2,}|From:\s.+$)",
     re.IGNORECASE | re.MULTILINE,
 )
 # Signature delimiters: a line that is only `--` or only a sign-off phrase.

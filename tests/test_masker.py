@@ -111,3 +111,13 @@ def test_meeting_link_is_masked_and_restored():
     assert m.vault["<LINK_TOKEN_1>"] == link
     assert contains_raw_pii(link) and not contains_raw_pii(m.masked_text)
     assert unmask_text(m.masked_text, m.vault).startswith(f"Is {link}")
+
+
+def test_preprocess_strips_gmail_wrapped_reply_header():
+    """Gmail wraps a long "On ... <addr> wrote:" header over two lines (seen in a live test)."""
+    text = ("Could we move the call to Thursday\nat 11am instead?\n\n"
+            "On Fri, Nov 13, 2026 at 5:59 PM Matthew Lee <someone@gmail.com>\nwrote:\n\n"
+            "> I will be attending the meeting.\n")
+    assert preprocess_email(text) == "Could we move the call to Thursday\nat 11am instead?"
+    text2 = "Tuesday works.\n\nOn Fri, Nov 13, 2026 at 5:59 PM AxMatt Supply Support <\nsupport@x.com> wrote:\n\n> Hi"
+    assert preprocess_email(text2) == "Tuesday works."
