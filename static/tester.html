@@ -68,6 +68,13 @@
 
             <!-- ============================ DASHBOARD ============================ -->
             <section id="dash" class="hidden space-y-3">
+                <!-- New session -->
+                <div class="flex items-center justify-between bg-white rounded-xl shadow px-4 py-2.5">
+                    <p class="text-xs text-slate-500">처음부터 다시 테스트하고 싶다면</p>
+                    <button id="newSessionBtn"
+                        class="bg-slate-700 hover:bg-slate-600 text-white rounded-lg px-3 py-1.5 text-xs font-semibold">
+                        🆕 새 세션 시작</button>
+                </div>
                 <!-- Orders -->
                 <div class="bg-white rounded-xl shadow p-4 space-y-2">
                     <div class="flex items-center justify-between">
@@ -373,6 +380,26 @@
                     await refresh();
                 } finally {
                     btn.disabled = false;
+                }
+            });
+
+            const NEW_SESSION_MSG = [
+                "새 세션을 시작할까요?",
+                "",
+                "• 지금까지의 대화, 주문, 미팅이 모두 삭제됩니다.",
+                "• 이전에 받은 메일에 답장하면, 새 문의로 처리됩니다.",
+            ].join("\n");
+
+            $("newSessionBtn").addEventListener("click", async (e) => {
+                if (!confirm(NEW_SESSION_MSG)) return;
+                e.target.disabled = true;
+                try {
+                    if (await post(`/t/${token}/new-session`, { confirm: "NEW SESSION" })) {
+                        toast("");
+                        await refresh();
+                    }
+                } finally {
+                    e.target.disabled = false;
                 }
             });
 

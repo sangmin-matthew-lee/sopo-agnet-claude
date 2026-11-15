@@ -456,6 +456,29 @@ def reset_live(db_path: str | None = None) -> None:
             conn.execute(f"DELETE FROM {table}")
 
 
+def reset_tester(tester_id: int, email: str, db_path: str | None = None) -> None:
+    """A tester's "new session": delete their live threads (and everything tied to them) and their test
+    orders. The registration (dashboard link) and email_usage (Resend quota) are kept."""
+    with get_conn(db_path) as conn:
+        mine = "(SELECT thread_id FROM thread_vaults WHERE source = 'live' AND lower(customer_email) = lower(?))"
+        _delete_agent_sessions_for(conn, mine, email)
+        for table in ("processed_messages", "tech_schedules", "calendar_events", "thread_traces",
+                      "mail_messages", "internal_inbox", "inbound_log"):
+            conn.execute(f"DELETE FROM {table} WHERE thread_id IN {mine}", (email,))
+        conn.execute(f"DELETE FROM simulated_emails WHERE source = 'live' AND thread_id IN {mine}", (email,))
+        conn.execute("DELETE FROM email_attachments WHERE email_id NOT IN (SELECT id FROM simulated_emails)")
+        conn.execute(f"DELETE FROM thread_vaults WHERE thread_id IN {mine}", (email,))
+        conn.execute("DELETE FROM engineer_parts WHERE part_number IN (SELECT part_number FROM orders WHERE tester_id = ?)",
+                     (tester_id,))
+        conn.execute("DELETE FROM orders WHERE tester_id = ?", (tester_id,))
+
+
+def _delete_agent_sessions_for(conn: sqlite3.Connection, subquery: str, email: str) -> None:
+    for table in AGENT_SESSION_TABLES:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+            conn.execute(f"DELETE FROM {table} WHERE session_id IN {subquery}", (email,))
+
+
 # ---------------------------------------------------------------- idempotency
 
 
