@@ -7,6 +7,7 @@ random (256 bits) and only its sha256 is stored.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -26,6 +27,7 @@ from core.mail.config import LiveConfig
 from core.mail.resend import CUSTOMER_INBOX
 from core.masker import ORDER_RE, PART_RE
 from core.ratelimit import client_ip, register_limiter, tester_limiter
+from live import inbound
 
 router = APIRouter()
 TESTER_PAGE = Path(__file__).parent.parent / "static" / "tester.html"
@@ -175,6 +177,32 @@ async def hand_back(thread_id: str, tester: dict[str, Any] = Depends(current_tes
     if _own_thread(tester, thread_id)["thread_status"] != db.HUMAN_HANDLING:
         raise HTTPException(409, "This thread is not handled by a person.")
     return {"thread_status": db.resume_thread(thread_id)}
+
+
+# ------------------------------------------------------------------ new session
+
+NEW_SESSION_CONFIRM = "NEW SESSION"
+
+
+class NewSession(BaseModel):
+    confirm: str
+
+
+@router.post("/t/{token}/new-session")
+async def new_session(req: NewSession, tester: dict[str, Any] = Depends(current_tester)) -> dict[str, Any]:
+    """Start over: delete this tester's conversations, orders and meetings. The link and quota stay."""
+    if req.confirm != NEW_SESSION_CONFIRM:
+        raise HTTPException(400, f'Send {{"confirm": "{NEW_SESSION_CONFIRM}"}} to start a new session.')
+    with db.get_conn() as conn:
+        ids = [r[0] for r in conn.execute(
+            "SELECT thread_id FROM thread_vaults WHERE source = 'live' AND lower(customer_email) = lower(?)",
+            (tester["email"],))]
+    # Let any email being processed right now finish first.
+    async with contextlib.AsyncExitStack() as stack:
+        for thread_id in sorted(ids):
+            await stack.enter_async_context(inbound.thread_lock(thread_id))
+        db.reset_tester(tester["id"], tester["email"])
+    return tester_state(tester)
 
 
 # ------------------------------------------------------------------ attachments

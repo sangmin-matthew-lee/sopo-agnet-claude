@@ -329,3 +329,59 @@ def test_label_download_only_for_the_owner(client, resend):
     # the sandbox admin can open it with the passcode
     assert client.get(f"/api/attachments/{att['id']}").status_code == 401
     assert client.get(f"/api/attachments/{att['id']}", headers=H).content == pdf.data
+
+
+# ------------------------------------------------------------------ new session
+
+
+def _count(table, where="1=1", args=()):
+    with db.get_conn() as conn:
+        return conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", args).fetchone()[0]
+
+
+def test_new_session_deletes_only_this_testers_data(client):
+    ta = token_of(register(client, "a@gmail.com"))
+    tb = token_of(register(client, "b@gmail.com"))
+    oa = client.post(f"/t/{ta}/orders", json={"delivered": "10d"}).json()
+    client.post(f"/t/{tb}/orders", json={"delivered": "10d"})
+    for token, email, tag in ((ta, "a@gmail.com", "aaa"), (tb, "b@gmail.com", "bbb")):
+        thread = _seed_tester_data(token, email, tag)
+        threads.remember(f"<{tag}-in@gmail.com>", thread, threads.IN, "Help", sender=email, body="hi")
+        db.add_calendar_event(db.ENG_ALEX, "2030-01-01T17:00:00+00:00", "2030-01-01T17:30:00+00:00",
+                              "Tech support", "MEETING", thread)
+        db.save_tech_schedule(thread, email, None, meeting_start="2030-01-01T17:00:00+00:00", status="CONFIRMED")
+    db.insert_email("live-aaa", "CUSTOMER_INBOX", "a@gmail.com", "Label", "see PDF", source="live",
+                          status="SENT", attachments=[("label.pdf", "application/pdf", b"%PDF")])
+    used = _count("email_usage")
+
+    r = client.post(f"/t/{ta}/new-session", json={"confirm": "NEW SESSION"})
+    assert r.status_code == 200
+    a = r.json()
+    assert a["orders"] == a["threads"] == a["sent_log"] == a["traces"] == a["meetings"] == []
+    assert a["am_inbox"] == a["engineer_inbox"] == []
+    assert client.get(f"/t/{ta}/state").status_code == 200  # same link still works
+
+    for table in ("thread_vaults", "simulated_emails", "thread_traces", "internal_inbox", "mail_messages",
+                  "tech_schedules", "calendar_events"):
+        assert _count(table, "thread_id = 'live-aaa'") == 0, table
+        assert _count(table, "thread_id = 'live-bbb'") > 0, table
+    assert _count("orders", "order_id = ?", (oa["order_id"],)) == 0
+    assert _count("engineer_parts", "part_number = ?", (oa["part_number"],)) == 0
+    assert _count("email_attachments") == 0  # only A had a file
+    assert _count("email_usage") == used  # the quota isn't given back
+
+    b = client.get(f"/t/{tb}/state").json()
+    assert len(b["orders"]) == len(b["threads"]) == len(b["sent_log"]) == 1
+
+    # A reply to an email from the old session now starts a new conversation.
+    assert threads.find_thread(["<aaa-in@gmail.com>"], owner="a@gmail.com") is None
+    assert client.post(f"/t/{ta}/orders", json={"delivered": "10d"}).status_code == 200
+
+
+def test_new_session_needs_confirmation_and_a_valid_link(client):
+    ta = token_of(register(client, "a@gmail.com"))
+    client.post(f"/t/{ta}/orders", json={"delivered": "10d"})
+    for body in ({}, {"confirm": "yes"}):
+        assert client.post(f"/t/{ta}/new-session", json=body).status_code in (400, 422)
+    assert client.post("/t/not-a-token/new-session", json={"confirm": "NEW SESSION"}).status_code == 404
+    assert len(client.get(f"/t/{ta}/state").json()["orders"]) == 1
