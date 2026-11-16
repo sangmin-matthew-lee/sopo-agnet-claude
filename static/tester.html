@@ -107,6 +107,10 @@
                             등록한 개인 메일함에서 보내세요. 답장은 같은 스레드로 옵니다. 이어서 대화하려면 그 메일에
                             <b>답장</b>하면 됩니다. 처리에는 보통 30초~1분이 걸립니다.
                         </p>
+                        <p class="text-slate-500 mt-1">
+                            💡 <b>Gmail로 쓰기</b> / <b>Outlook으로 쓰기</b>를 누르면 받는 사람·제목·본문이 채워진 새 메일이 열립니다.
+                            시크릿(Incognito) 창에서는 먼저 Gmail 또는 Outlook에 <b>로그인</b>한 뒤 눌러 주세요.
+                        </p>
                     </div>
                     <div id="scenarios" class="space-y-2"></div>
                 </div>
@@ -288,12 +292,23 @@
                 ];
             }
 
+            // Webmail compose pages with To / subject / body filled in (no desktop mail app needed).
+            function composeLinks(to, subject, body, me) {
+                // %20, not "+": Outlook would show a literal "+" between words.
+                const q = (o) => Object.entries(o).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+                const google = /@(gmail|googlemail)\.com$/i.test(me) || !/@(outlook|hotmail|live|msn)\./i.test(me);
+                return {
+                    // authuser picks the registered Google account when several are signed in.
+                    gmail: "https://mail.google.com/mail/?" +
+                        q({ view: "cm", fs: "1", to, su: subject, body, ...(google ? { authuser: me } : {}) }),
+                    outlook: "https://outlook.live.com/mail/0/deeplink/compose?" + q({ to, subject, body }),
+                };
+            }
+
             function renderScenarios(s) {
                 setHtml($("scenarios"), scenarios(s.orders)
                     .map((sc, i) => {
-                        const mailto = sc.subject
-                            ? `mailto:${encodeURIComponent(sc.to || s.support_address)}?subject=${encodeURIComponent(sc.subject)}&body=${encodeURIComponent(sc.body)}`
-                            : "";
+                        const links = sc.subject ? composeLinks(sc.to || s.support_address, sc.subject, sc.body, s.tester.email) : null;
                         return `<details data-key="sc-${i}" class="border rounded-lg" ${i === 0 ? "open" : ""}>
                             <summary class="px-3 py-2 font-semibold text-xs cursor-pointer">${esc(sc.title)}
                               ${sc.need ? `<span class="ml-1 text-amber-700 font-normal">· ${esc(sc.need)}</span>` : ""}</summary>
@@ -304,7 +319,8 @@
                               ${sc.hint ? `<p class="text-slate-500">💡 ${esc(sc.hint)}</p>` : ""}
                               <div class="flex gap-2">
                                 <button data-copy="${esc(sc.body)}" class="flex-1 bg-slate-700 text-white rounded py-1.5">본문 복사</button>
-                                ${mailto ? `<a href="${esc(mailto)}" class="flex-1 text-center bg-emerald-600 text-white rounded py-1.5">메일 앱으로 열기</a>` : ""}
+                                ${links ? `<a href="${esc(links.gmail)}" target="_blank" rel="noopener" class="flex-1 text-center bg-emerald-600 text-white rounded py-1.5">Gmail로 쓰기</a>
+                                <a href="${esc(links.outlook)}" target="_blank" rel="noopener" class="flex-1 text-center bg-sky-600 text-white rounded py-1.5">Outlook으로 쓰기</a>` : ""}
                               </div>
                             </div>
                           </details>`;
